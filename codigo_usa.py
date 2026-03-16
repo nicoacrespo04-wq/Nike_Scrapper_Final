@@ -519,6 +519,16 @@ def filter_equipment_sb(df_sb: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def filter_kids_sb(df_sb: pd.DataFrame) -> pd.DataFrame:
+    """Devuelve solo filas donde Gender indica kids (excluye football)."""
+    df = df_sb.copy()
+    df["_is_kids"] = df["Gender"].apply(lambda x: bool(KIDS_RE.search(str(x or ""))))
+    df["_is_football"] = df["BU"].astype(str).str.contains("FW", case=False, na=False) & df["Category"].astype(str).str.contains(
+        "FOOTBALL|SOCCER", case=False, na=False
+    )
+    return df[df["_is_kids"] & ~df["_is_football"]].copy()
+
+
 def build_ar_styles_by_marketing_name(df_nf: pd.DataFrame, franquicia_excel: str, cap_styles: int = 50) -> List[str]:
     """
     Filtra StatusBooks por Marketing Name
@@ -581,6 +591,72 @@ def build_ar_styles_by_marketing_name(df_nf: pd.DataFrame, franquicia_excel: str
     if styles:
         log(f"         Ejemplos: {styles[:5]}")
     
+    return styles
+
+
+def build_ar_kids_styles(df_kids: pd.DataFrame, franquicia_excel: str, cap_styles: int = 50) -> List[str]:
+    """
+    Como build_ar_styles_by_marketing_name pero para kids:
+    - El StatusBook no incluye 'Kids' en Marketing Name, solo en Gender.
+    - Stripea 'kids' del nombre de franquicia antes de tokenizar para que
+      el match funcione contra Marketing Names tipo 'Nike Air Force 1'.
+    - Usa un DataFrame ya filtrado solo a kids (filter_kids_sb).
+    """
+    fr_raw = (franquicia_excel or "").strip()
+    has_slash = fr_raw.endswith("/")
+    fr_no_slash = fr_raw[:-1].strip() if has_slash else fr_raw.strip()
+
+    # Remover 'kids' (no está en Marketing Name del StatusBook)
+    fr_no_kids = re.sub(r"\s*\bkids?\b\s*", " ", fr_no_slash, flags=re.I).strip()
+
+    q_tokens = canonicalize_goretex_in_tokens(tokenize(fr_no_kids))
+    base_tokens = q_tokens.copy()
+
+    log(f"      Buscando styles KIDS para '{fr_raw}' → sin kids: '{fr_no_kids}'")
+    log(f"         Tokens requeridos: {q_tokens}")
+
+    if not q_tokens:
+        log(f"         ⚠️ Sin tokens válidos")
+        return []
+
+    styles: List[str] = []
+    seen: Set[str] = set()
+
+    for _, r in df_kids.iterrows():
+        st = str(r.get("Style", "")).strip().upper()
+        if not st or st in seen:
+            continue
+
+        mn = str(r.get("Marketing Name", "")).strip()
+        if not mn:
+            continue
+
+        if not tokens_match_all(mn, q_tokens):
+            continue
+
+        if has_slash:
+            if not slash_rule_ok_text(mn, base_tokens):
+                continue
+
+        mn_toks = tokenize(mn)
+        skip = False
+        for qualifier in ("plus", "premium"):
+            if qualifier not in q_tokens and qualifier in mn_toks:
+                skip = True
+                break
+        if skip:
+            continue
+
+        styles.append(st)
+        seen.add(st)
+
+        if len(styles) >= cap_styles:
+            break
+
+    log(f"         ✅ Encontrados {len(styles)} styles kids")
+    if styles:
+        log(f"         Ejemplos: {styles[:5]}")
+
     return styles
 
 
@@ -1239,6 +1315,10 @@ def build_nonfootball_output(
             if not franquicia:
                 continue
 
+            # Kids se procesan en build_kids_output()
+            if KIDS_RE.search(franquicia):
+                continue
+
             log(f"\n   🔍 Procesando: '{franquicia}' ({idx+1}/{len(df_links)})")
             
             if has_url:
@@ -1376,6 +1456,163 @@ def build_nonfootball_output(
 def build_top_styles_by_stock(df: pd.DataFrame) -> List[str]:
     stock_by_style = df.groupby("Style")["_stock"].sum().sort_values(ascending=False)
     return [str(s).strip().upper() for s in stock_by_style.index.tolist() if str(s).strip()]
+
+
+# -------------------------------------------------------------------
+# CONSTRUCCIÓN DE OUTPUTS - KIDS
+# -------------------------------------------------------------------
+def build_kids_output(
+    session: requests.Session,
+    df_sb: pd.DataFrame,
+    style_price_map: Dict[str, float],
+    style_meta_map: Dict[str, Dict[str, str]],
+    links_sheets: Dict[str, pd.DataFrame],
+    fx_ars_per_usd: float,
+    run_date: str,
+) -> List[Dict[str, Any]]:
+    out_rows: List[Dict[str, Any]] = []
+    df_kids = filter_kids_sb(df_sb)
+
+    log(f"\n👦 [KIDS] StatusBooks kids: {len(df_kids)} filas")
+
+    for sheet in ["Running", "Sportswear", "Training"]:
+        if sheet not in links_sheets:
+            continue
+
+        df_links = links_sheets[sheet].copy()
+        df_links.columns = [str(c).strip() for c in df_links.columns]
+        has_url = "URL_US" in df_links.columns
+
+        # Solo filas cuya franquicia sea kids
+        kids_mask = df_links["Franquicia"].apply(lambda x: bool(KIDS_RE.search(str(x or ""))))
+        df_kids_links = df_links[kids_mask]
+
+        if df_kids_links.empty:
+            continue
+
+        log(f"\n👦 [KIDS] sheet={sheet} | {len(df_kids_links)} franquicias kids")
+
+        for idx, r in df_kids_links.iterrows():
+            franquicia = str(r.get("Franquicia", "")).strip()
+            if not franquicia:
+                continue
+
+            log(f"\n   🔍 [KIDS] Procesando: '{franquicia}'")
+
+            if has_url:
+                url_us = str(r.get("URL_US", "")).strip()
+                if not url_us:
+                    url_us = build_nike_search_url(franquicia)
+            else:
+                url_us = build_nike_search_url(franquicia)
+
+            styles_list = build_ar_kids_styles(df_kids, franquicia, cap_styles=MAX_AR_STYLES_PER_SEARCH)
+            valid_styles = set(s.upper() for s in styles_list)
+
+            if not valid_styles:
+                log(f"      ⚠️ No se encontraron styles kids AR para '{franquicia}'")
+                out_rows.append(
+                    make_row(
+                        run_date=run_date,
+                        division="FW",
+                        franchise=franquicia,
+                        category=sheet,
+                        marketing_ar="",
+                        style="",
+                        us_name="",
+                        pdp="",
+                        retail_ars=None,
+                        fx_ars_per_usd=fx_ars_per_usd,
+                        us_full=None,
+                    )
+                )
+                human_pause(*SLEEP_RANGE)
+                continue
+
+            pick = None
+            try:
+                log(f"      Scrapeando URL: {url_us}")
+                products = scrape_plp_products_paged(
+                    session, url_us,
+                    pages=NONFOOTBALL_MAX_PAGES,
+                    max_cards=MAX_PLP_PRODUCTS_SCAN,
+                )
+                log(f"      Total productos encontrados: {len(products)}")
+
+                if products:
+                    pick = choose_product_from_plp(products, franquicia, valid_styles, style_meta_map)
+                else:
+                    log(f"      ⚠️ No se encontraron productos en la PLP")
+
+            except Exception as e:
+                log(f"      ❌ Error scraping PLP: {e}")
+
+            if pick is None and valid_styles:
+                log(f"      🧩 Fallback UI Search kids: {min(len(valid_styles), UI_SEARCH_MAX_STYLES_PER_FRANCHISE)} styles...")
+                ui = None
+                combined: List[PLPProduct] = []
+                for j, st in enumerate(list(valid_styles)[:UI_SEARCH_MAX_STYLES_PER_FRANCHISE], start=1):
+                    log(f"         🔎 UI search ({j}) style={st}")
+                    ui, ui_products = ui_search_products_fallback(ui, query=st, max_cards=MAX_PLP_PRODUCTS_SCAN)
+                    for p in ui_products:
+                        if p.style_base and p.style_base.upper() == st.upper():
+                            combined.append(p)
+                try:
+                    if ui:
+                        ui.close()
+                except Exception:
+                    pass
+                dedup = {p.pdp_url: p for p in combined}
+                combined = list(dedup.values())
+                log(f"      🧩 UI Search products (post-filter): {len(combined)}")
+                if combined:
+                    pick = choose_product_from_plp(combined, franquicia, valid_styles, style_meta_map)
+
+            if pick is None:
+                log(f"      ❌ No se encontró producto válido para '{franquicia}'")
+                out_rows.append(
+                    make_row(
+                        run_date=run_date,
+                        division="FW",
+                        franchise=franquicia,
+                        category=sheet,
+                        marketing_ar="",
+                        style="",
+                        us_name="",
+                        pdp="",
+                        retail_ars=None,
+                        fx_ars_per_usd=fx_ars_per_usd,
+                        us_full=None,
+                    )
+                )
+            else:
+                style = pick.style_base
+                ar_ars = style_price_map.get(style)
+                meta = style_meta_map.get(style, {})
+                marketing = meta.get("Marketing Name", "")
+
+                log(f"      ✅ Producto seleccionado: {pick.title}")
+                log(f"         Style: {style}, Precio US: ${pick.price_usd}, Precio AR: ${ar_ars}")
+
+                out_rows.append(
+                    make_row(
+                        run_date=run_date,
+                        division="FW",
+                        franchise=franquicia,
+                        category=sheet,
+                        marketing_ar=marketing,
+                        style=style,
+                        us_name=pick.title,
+                        pdp=pick.pdp_url,
+                        retail_ars=float(ar_ars) if ar_ars is not None else None,
+                        fx_ars_per_usd=fx_ars_per_usd,
+                        us_full=float(pick.price_usd) if pick.price_usd is not None else None,
+                    )
+                )
+
+            human_pause(*SLEEP_RANGE)
+
+    return out_rows
 
 
 # -------------------------------------------------------------------
@@ -1945,6 +2182,9 @@ def main():
 
         log("\n" + "="*60)
         rows.extend(build_nonfootball_output(session, df_sb, style_price_map, style_meta_map, links_sheets, fx, run_date))
+
+        log("\n" + "="*60)
+        rows.extend(build_kids_output(session, df_sb, style_price_map, style_meta_map, links_sheets, fx, run_date))
 
         if SCRAPING_APPAREL:
             log("\n" + "="*60)

@@ -1,0 +1,184 @@
+name: Weekly Scrapers
+
+on:
+  schedule:
+    # Todos los lunes a las 12:00 UTC = 09:00 AM Argentina
+    - cron: '0 12 * * 1'
+  workflow_dispatch:  # Permite correrlo manualmente desde GitHub
+
+jobs:
+
+  # ─────────────────────────────────────────
+  # 1) ADIDAS AR + US
+  # ─────────────────────────────────────────
+  adidas:
+    name: Adidas AR + US
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper Adidas
+        env:
+          AR_PROXY_USER: ${{ secrets.AR_PROXY_USER }}
+          AR_PROXY_PASS: ${{ secrets.AR_PROXY_PASS }}
+          US_PROXY_USER: ${{ secrets.US_PROXY_USER }}
+          US_PROXY_PASS: ${{ secrets.US_PROXY_PASS }}
+        run: python codigo_adidas_6.py
+
+      - name: Subir outputs Adidas
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-adidas
+          path: |
+            Adidas_Monitoring_*.xlsx
+            Adidas_*.csv
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 2) MELI — Adidas vs Puma
+  # ─────────────────────────────────────────
+  meli-adidas-puma:
+    name: Meli Adidas vs Puma
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper Meli Adidas/Puma
+        run: python codigo_meli_adidas_puma.py
+
+      - name: Subir outputs Meli Adidas/Puma
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-meli-adidas-puma
+          path: "*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 3) MELI — Nike Mobile
+  # ─────────────────────────────────────────
+  meli-nike:
+    name: Meli Nike Mobile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper Meli Nike
+        run: python codigo_meli_nike_mobile_v7_skip_pau....py
+
+      - name: Subir outputs Meli Nike
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-meli-nike
+          path: "*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 4) RETAIL MEDIA SEARCH
+  # ─────────────────────────────────────────
+  retail-media:
+    name: Retail Media Search
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper Retail Media
+        run: python codigo_retail_media_search_v6.py
+
+      - name: Subir outputs Retail Media
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-retail-media
+          path: "*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 5) SPORTING
+  # ─────────────────────────────────────────
+  sporting:
+    name: Sporting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper Sporting
+        run: python codigo_sporting3.py
+
+      - name: Subir outputs Sporting
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-sporting
+          path: "*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 6) OPENSPORTS
+  # ─────────────────────────────────────────
+  opensports:
+    name: OpenSports
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper OpenSports
+        run: python codigo_opensports.py
+
+      - name: Subir outputs OpenSports
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-opensports
+          path: "*.xlsx"
+          retention-days: 30

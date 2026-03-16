@@ -54,11 +54,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DEFAULT_EXCEL_PATH = "Comparativa_Nike_Adidas.xlsx"
 
-# Proxy Decodo Mobile
-PROXY_HOST = "gate.decodo.com"
-PROXY_USER = "spyrndvq0x"
-PROXY_PASS  = "8eOzLZZj3i3b=mcoc8"
-PROXY_PORTS = list(range(10001, 10011))  # 10 puertos
+# Proxy SmartProxy
+PROXY_HOST = "proxy.smartproxy.net"
+PROXY_PORT = 3120
+PROXY_USER = "smart-hysjlehcrm30"
+PROXY_PASS = "GmpKHg6LdhAbs9Tx"
 
 # Timeouts (ms)
 NAV_TIMEOUT   = 60_000
@@ -95,47 +95,34 @@ def log_sizes(msg):    print(f"[{datetime.now():%H:%M:%S}  👟  ] {msg}")
 # ============================================================
 
 def build_proxy(session_id: Optional[str] = None) -> Dict[str, str]:
-    """
-    Proxy con puerto rotativo.
-    - Con session_id: puerto determinístico (sticky session por MLA).
-    - Sin session_id: puerto aleatorio.
-    """
-    if session_id:
-        port = PROXY_PORTS[abs(hash(session_id)) % len(PROXY_PORTS)]
-    else:
-        port = random.choice(PROXY_PORTS)
-
-    log_proxy(f"Puerto {port} (session: {session_id or 'random'})")
     return {
-        "server":   f"http://{PROXY_HOST}:{port}",
+        "server":   f"http://{PROXY_HOST}:{PROXY_PORT}",
         "username": PROXY_USER,
         "password": PROXY_PASS,
     }
 
 
 def test_proxy_simple() -> Tuple[bool, Optional[int]]:
-    """Test rápido: intenta conectar con los primeros 3 puertos."""
+    """Test rápido de conectividad del proxy."""
     log_proxy("Testeando proxy...")
-    for port in PROXY_PORTS[:3]:
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    proxy={"server": f"http://{PROXY_HOST}:{port}",
-                           "username": PROXY_USER, "password": PROXY_PASS},
-                    args=["--ignore-certificate-errors"],
-                )
-                page = browser.new_page()
-                resp = page.goto("https://api.ipify.org?format=json", timeout=15_000)
-                if resp and resp.status == 200:
-                    ip = json.loads(page.inner_text("body")).get("ip", "N/A")
-                    browser.close()
-                    log_success(f"Proxy OK — puerto {port} — IP: {ip}")
-                    return True, port
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                proxy=build_proxy(),
+                args=["--ignore-certificate-errors"],
+            )
+            page = browser.new_page()
+            resp = page.goto("https://api.ipify.org?format=json", timeout=15_000)
+            if resp and resp.status == 200:
+                ip = json.loads(page.inner_text("body")).get("ip", "N/A")
                 browser.close()
-        except Exception as e:
-            log_warning(f"  Puerto {port} falló: {str(e)[:60]}")
-    log_error("No se pudo conectar con ningún puerto del proxy.")
+                log_success(f"Proxy OK — IP: {ip}")
+                return True, PROXY_PORT
+            browser.close()
+    except Exception as e:
+        log_warning(f"  Proxy falló: {str(e)[:60]}")
+    log_error("No se pudo conectar con el proxy.")
     return False, None
 
 # ============================================================
@@ -712,26 +699,8 @@ def extract_sizes(page) -> Optional[int]:
                 if count > 0:
                     return count
 
-                # ── Retry ────────────────────────────────────────────────────
-                log_sizes("    Listbox vacío — reintentando...")
-                try:
-                    trigger2 = page.locator(
-                        "[data-testid='PICKER-SIZE'] button.andes-dropdown__trigger"
-                    ).first
-                    if trigger2.count() > 0:
-                        trigger2.click(timeout=CLICK_TIMEOUT)
-                        try:
-                            page.wait_for_selector(listbox_sel, timeout=8000)
-                        except Exception:
-                            time.sleep(3.0)
-                        count = _leer_listbox_playwright(page)
-                        if count > 0:
-                            return count
-                except Exception:
-                    pass
-
-                # Dropdown detectado pero no se pudo leer → None (no rompe promedio)
-                log_sizes("    Dropdown ilegible tras retry → None")
+                # Dropdown detectado pero ilegible → None (se excluye del promedio)
+                log_sizes("    Dropdown ilegible → None")
                 return None
 
             except Exception as e:
@@ -1234,11 +1203,13 @@ def _scroll_hasta_cargar_todo(page, selector: str, max_intentos: int = 15) -> No
 
 def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> List[Dict[str, str]]:
     """
-    Scrapea la tienda oficial de la marca en MercadoLibre Argentina buscando la franquicia.
+    Scrapea el listado de Meli buscando la franquicia en los resultados de la marca.
 
-    Estrategia v10 — tienda oficial + scroll completo:
-      1. Navega a la tienda oficial y busca desde el buscador interno
-         → Meli mantiene el contexto de tienda → 0 usados, 0 revendedores
+    Estrategia v12 — URL directa al listado general:
+      1. Navega directo a listado.mercadolibre.com.ar/{prefijo}-{franquicia}-{marca}
+         → ~3x más rápido que tipear en buscador interno
+         → Los primeros resultados son siempre tienda oficial (verificado en debug)
+         → El filtro de vendedor en scrape_pdp() actúa como red de seguridad
       2. Scroll incremental hasta cargar TODOS los items (lazy loading)
       3. Filtra: descarta "salomon" en URL + franquicia en título
     """
@@ -1247,8 +1218,16 @@ def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> Lis
     desc_franq    = 0
     desc_salomon  = 0
 
-    # Palabras de marca ajena que nunca queremos (aunque estén en tienda Nike/Adidas)
     MARCAS_EXCLUIR = ["salomon", "salom"]
+
+    # Construir URL directa de listado
+    nombre_limpio = parsear_franquicia(franquicia)["nombre_limpio"]
+    prefijo       = _prefijo_categoria(categoria)
+    if prefijo:
+        slug = f"{prefijo}-{nombre_limpio}-{marca}".replace(" ", "-").lower()
+    else:
+        slug = f"{nombre_limpio}-{marca}".replace(" ", "-").lower()
+    plp_url = f"https://listado.mercadolibre.com.ar/{slug}"
 
     with sync_playwright() as p:
         session_id = f"plp_{marca}_{franquicia}_{uuid.uuid4().hex[:8]}"
@@ -1268,11 +1247,12 @@ def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> Lis
         page.set_default_timeout(NAV_TIMEOUT)
 
         try:
-            # Entrar a la tienda y buscar desde adentro
-            ok = search_within_store(page, marca, franquicia, categoria)
-            if not ok:
-                log_warning(f"  ⚠️  Falló búsqueda en tienda — abortando {marca}/{franquicia}")
+            log_scraping(f"  🔗 URL directa: {plp_url}")
+            resp = page.goto(plp_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+            if resp and resp.status >= 400:
+                log_warning(f"  ⚠️  Status {resp.status} — abortando {marca}/{franquicia}")
                 return resultados
+            time.sleep(1.5)
 
             # Scroll incremental para forzar el lazy loading de todos los items
             item_selector = "li.ui-search-layout__item"
@@ -1900,7 +1880,7 @@ def main():
         print("  🏭  MODO PRODUCCIÓN — todas las categorías")
     print("=" * 90)
     print(f"  📊  Excel     : {DEFAULT_EXCEL_PATH}")
-    print(f"  📡  Proxy     : {PROXY_HOST} (puertos {PROXY_PORTS[0]}–{PROXY_PORTS[-1]})")
+    print(f"  📡  Proxy     : {PROXY_HOST}:{PROXY_PORT}")
     print(f"  👷  PLP workers: {PLP_WORKERS} threads")
     print(f"  👷  PDP workers: {PDP_WORKERS} procesos")
     print(f"  📦  Cache     : {CACHE_DIR}")
@@ -1974,10 +1954,9 @@ def main():
         log_error("No se pudieron scrapear PDPs.")
         return
 
-    # Filtrar productos sin talles
-    # talles == 0  → no se encontró picker → sacar del output
-    # talles == None → dropdown detectado pero ilegible → mantener (campo vacío)
-    # talles >= 1  → real → mantener
+    # talles == 0   → sin picker → sacar del output
+    # talles == None → dropdown ilegible → mantener con campo vacío (excluido del promedio)
+    # talles >= 1   → real → mantener
     antes = len(resultados)
     resultados = [r for r in resultados if r.get("talles") != 0]
     eliminados = antes - len(resultados)

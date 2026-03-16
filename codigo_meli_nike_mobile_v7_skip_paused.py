@@ -82,7 +82,7 @@ CACHE_TTL_DAYS = 0
 REFRESH_CACHED_DEFAULT = False
 
 # Playwright
-DEFAULT_HEADLESS = False
+DEFAULT_Headless = True
 DEFAULT_NAV_TIMEOUT_MS = 90_000
 
 # Rotación de IP por bloqueo

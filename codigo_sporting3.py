@@ -40,19 +40,19 @@ SEASON = "SP26"
 STATUSBOOKS_FILE = "StatusBooks NDDC ARG SP26.xlsb"
 STATUSBOOKS_SHEET = "Books NDDC"
 
-HEADLESS = False
+Headless = True
 AGENTS = max(2, int(os.getenv("AGENTS", "2")))
 
 # 0 = sin limite; 40 para debug rapido
-DEBUG_LIMIT = int(os.getenv("DEBUG_LIMIT", "40"))
+DEBUG_LIMIT = int(os.getenv("DEBUG_LIMIT", "0"))
 
-MAX_PLP_SCROLL_ROUNDS = 40
-PLP_STAGNATION_ROUNDS = 5
+MAX_PLP_SCROLL_ROUNDS = 25
+PLP_STAGNATION_ROUNDS = 4
 PLP_SCROLL_PIXELS = 1400
 MAX_MOSTRAR_MAS_CLICKS = 80
 
-PDP_WAIT_MS = 25_000
-PLP_WAIT_MS = 45_000
+PDP_WAIT_MS = 20_000
+PLP_WAIT_MS = 35_000
 
 CACHE_PATH = "sporting_cache.json"
 
@@ -68,6 +68,10 @@ VALID_PRICE_MIN = 0.0
 
 BROWSER_RESET_EVERY = 90
 RESET_SLEEP_SECONDS = 8
+
+# Cada cuantos items se persiste el cache a disco (dentro del lock).
+# Valor alto = menos I/O contention entre workers. Al final siempre se guarda todo.
+CACHE_FLUSH_EVERY = 10
 
 TS = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 RUN_DATE = dt.datetime.now().strftime("%Y-%m-%d")
@@ -539,7 +543,10 @@ def try_close_overlays(page):
 
 
 def try_set_postal_code(page, cp: str):
-    try:
+    # Sporting no tiene campo de código postal — función desactivada para no agregar
+    # ~1s de overhead por PDP iterando inputs innecesariamente.
+    return
+    try:  # noqa — código original preservado pero inalcanzable
         human_pause(0.8, 1.4)
         try_close_overlays(page)
         for inp in page.locator("input").all()[:30]:
@@ -689,10 +696,8 @@ def collect_pdp_links_from_plp(page, plp_url: str) -> list:
     """
     log(f"\n🌐 Abriendo PLP: {plp_url}")
     page.goto(plp_url, wait_until="domcontentloaded", timeout=PLP_WAIT_MS)
-    human_pause(1.5, 2.5)
+    human_pause(1.0, 1.8)
     try_close_overlays(page)
-    try_set_postal_code(page, CP_AMBA)
-    human_pause(0.8, 1.4)
 
     all_links = []
     seen = set()
@@ -735,12 +740,12 @@ def collect_pdp_links_from_plp(page, plp_url: str) -> list:
             if clicked:
                 mostrar_mas_clicks += 1
                 log(f"   ✅ 'Mostrar mas' click #{mostrar_mas_clicks} — esperando nuevos productos...")
-                # Esperar hasta 20s a que aparezcan nuevos links post-click
+                # Esperar hasta 10s a que aparezcan nuevos links post-click
                 t0 = time.time()
                 target = total + 1
                 grew = False
-                while time.time() - t0 < 20:
-                    human_pause(0.5, 0.9)
+                while time.time() - t0 < 10:
+                    human_pause(0.4, 0.7)
                     try_close_overlays(page)
                     if len(collect_plp_links_sporting(page)) >= target:
                         grew = True
@@ -1008,9 +1013,8 @@ def extract_max_cuotas_sporting(page) -> int:
 
 def scrape_pdp(page, url: str) -> dict:
     page.goto(url, wait_until="domcontentloaded", timeout=PDP_WAIT_MS)
-    human_pause(0.5, 1.2)
+    human_pause(0.3, 0.7)
     try_close_overlays(page)
-    try_set_postal_code(page, CP_AMBA)
 
     style_raw = extract_stylecolor_from_url(url)
     style_norm = normalize_stylecolor(style_raw)
@@ -1472,6 +1476,18 @@ def main():
         local_skipped_safe = 0
         local_skipped_not_in_sb = 0
         local_errors = 0
+        # items_since_flush: controla cuándo persistir a disco para no bloquear en cada item
+        items_since_flush = 0
+
+        def _maybe_flush(force: bool = False):
+            nonlocal items_since_flush
+            items_since_flush += 1
+            if force or items_since_flush >= CACHE_FLUSH_EVERY:
+                try:
+                    atomic_write_json(CACHE_PATH, cache)
+                except Exception as _fe:
+                    log(f"⚠️ (W{worker_id}) flush cache error: {_fe}")
+                items_since_flush = 0
 
         with sync_playwright() as pw:
             browser, context, page = new_browser_context(pw)
@@ -1481,6 +1497,7 @@ def main():
                 meta = style_meta[style_norm]
                 url = meta["last_url"]
 
+                # ── Preparar entrada en cache (solo en memoria, sin I/O) ──
                 with cache_lock:
                     if style_norm not in cache:
                         cache[style_norm] = {}
@@ -1497,19 +1514,17 @@ def main():
                         cache[style_norm]["InStatusBooks"] = False
                         local_skipped_not_in_sb += 1
                         aux = first_map_match(aux_map, style_norm)
-                        # Fallback a AUX quando no está en StatusBooks
                         cache[style_norm]["SB_ProductCode"] = style_norm
                         cache[style_norm]["SB_MarketingName"] = (aux.get("SB_MarketingName") if aux else "") or style_norm
                         cache[style_norm]["SB_Division"] = (aux.get("SB_Division") if aux else "") or "Unknown"
                         cache[style_norm]["SB_Category"] = "Non-NDDC (from AUX)" if aux else "Non-NDDC"
                         cache[style_norm]["SB_Franchise"] = ""
-                        cache[style_norm]["SB_SSN_VTA"] = "" # No SSN para productos auxiliares
+                        cache[style_norm]["SB_SSN_VTA"] = ""
                         cache[style_norm]["Aux_Año"] = (aux.get("Aux_Año") if aux else "") or ""
                         cache[style_norm]["NikeFullPrice"] = None
                         cache[style_norm]["NikeSaleDecimal"] = None
                         cache[style_norm]["NikeFinalPrice"] = None
-                        atomic_write_json(CACHE_PATH, cache)
-                        aux_marker = f"(AUX)" if aux else f"(NO_AUX)"
+                        aux_marker = "(AUX)" if aux else "(NO_AUX)"
                         log(f"[{idx}/{len(all_styles)}] ⚠️ (W{worker_id}) {style_norm}: fuera de SB {aux_marker} -> se scrapea igual")
                     else:
                         cache[style_norm]["InStatusBooks"] = True
@@ -1518,6 +1533,7 @@ def main():
 
                     already_has_valid = float(cache[style_norm].get("Sporting_FinalPrice", 0.0)) > VALID_PRICE_MIN
 
+                # ── SAFE-SKIP (ya cacheado y REFRESH_CACHED=False) ──
                 if (not REFRESH_CACHED) and already_has_valid:
                     with cache_lock:
                         local_skipped_safe += 1
@@ -1525,9 +1541,11 @@ def main():
                         nike_final = float(_nk) if _nk not in (None, "", "nan") else 0.0
                         sport_price = float(cache[style_norm].get("Sporting_FinalPrice", 0.0))
                         cache[style_norm]["DiffPctNike"] = float((sport_price - nike_final) / nike_final) if nike_final else None
-                        atomic_write_json(CACHE_PATH, cache)
+                        _maybe_flush()
                     log(f"[{idx}/{len(all_styles)}] ✅ (W{worker_id}) SAFE-SKIP {style_norm}")
                     local_processed += 1
+
+                # ── SCRAPE ──
                 else:
                     log(f"[{idx}/{len(all_styles)}] ➡️ (W{worker_id}) SCRAPE {style_norm} | {url}")
                     try:
@@ -1561,7 +1579,7 @@ def main():
                             has_nike = _nk not in (None, "", "nan")
                             nike_final = float(_nk) if has_nike else 0.0
                             cache[style_norm]["DiffPctNike"] = float((sport_price - nike_final) / nike_final) if nike_final else None
-                            atomic_write_json(CACHE_PATH, cache)
+                            _maybe_flush()
 
                         local_scraped_new += 1
                         local_processed += 1
@@ -1578,7 +1596,7 @@ def main():
                             local_errors += 1
                             cache[style_norm]["Sporting_Error"] = "Timeout"
                             cache[style_norm]["Sporting_LastErrorAt"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            atomic_write_json(CACHE_PATH, cache)
+                            _maybe_flush()
                         log("   ⚠️ Timeout en PDP. Sigo.")
                         local_processed += 1
 
@@ -1587,15 +1605,17 @@ def main():
                             local_errors += 1
                             cache[style_norm]["Sporting_Error"] = f"{type(e).__name__}: {e}"
                             cache[style_norm]["Sporting_LastErrorAt"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            atomic_write_json(CACHE_PATH, cache)
+                            _maybe_flush()
                         log(f"   ⚠️ Error en PDP: {e}. Sigo.")
                         local_processed += 1
 
+                # ── Reset periódico del browser ──
                 if local_processed > 0 and (local_processed % BROWSER_RESET_EVERY == 0):
                     log(f"\n🧹 (W{worker_id}) RESET PERIODICO: {local_processed} items -> reinicio browser...")
                     with cache_lock:
                         try:
                             atomic_write_json(CACHE_PATH, cache)
+                            items_since_flush = 0
                         except Exception as e:
                             log(f"⚠️ No pude guardar cache antes de reset: {e}")
                     for obj in (page, context, browser):
@@ -1605,6 +1625,13 @@ def main():
                             pass
                     time.sleep(RESET_SLEEP_SECONDS)
                     browser, context, page = new_browser_context(pw)
+
+            # Flush final garantizado al terminar el chunk
+            with cache_lock:
+                try:
+                    atomic_write_json(CACHE_PATH, cache)
+                except Exception as e:
+                    log(f"⚠️ (W{worker_id}) flush final error: {e}")
 
             for obj in (page, context, browser):
                 try:

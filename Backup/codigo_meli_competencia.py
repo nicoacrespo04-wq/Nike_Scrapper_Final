@@ -1,0 +1,1622 @@
+# -*- coding: utf-8 -*-
+"""
+MELI COMPETENCIA SCRAPER
+========================
+Scrapea precios de franquicias desde el archivo "Competencia Meli.xlsx".
+Solapas: Botines, Running, Training, Sportswear, Indumentaria, Accesorios
+Marcas soportadas por solapa (según los headers de la fila 1):
+  Nike, Adidas, Puma, Asics (y cualquier otra que aparezca en el Excel)
+
+Lógica de scraping y formato de output idénticos a codigo_meli_adidas_puma.py.
+"""
+
+import os
+import sys
+import json
+import time
+import re
+import uuid
+import threading
+import random
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple
+import urllib3
+
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
+from openpyxl.utils import get_column_letter
+
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ============================================================
+# CONFIGURACIÓN GENERAL
+# ============================================================
+
+DEFAULT_EXCEL_PATH = "Competencia Meli.xlsx"
+
+# Proxy Decodo Mobile
+PROXY_HOST = "gate.decodo.com"
+PROXY_USER = "spyrndvq0x"
+PROXY_PASS  = "8eOzLZZj3i3b=mcoc8"
+PROXY_PORTS = list(range(10001, 10011))  # 10 puertos
+
+# Timeouts (ms)
+NAV_TIMEOUT   = 60_000
+CLICK_TIMEOUT = 15_000
+SCROLL_WAIT   = 1.5
+
+# Límites
+MAX_PAGINAS                  = 2
+MAX_PRODUCTOS_POR_FRANQUICIA = 100
+MAX_PDP_RETRIES              = 2
+
+# Workers
+PLP_WORKERS = 3
+PDP_WORKERS = 3
+
+# Cache
+CACHE_DIR      = "meli_cache"
+CACHE_TTL_DAYS = 0   # 0 = sin expiración
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+def log_info(msg):     print(f"[{datetime.now():%H:%M:%S} INFO ] {msg}")
+def log_success(msg):  print(f"[{datetime.now():%H:%M:%S}  ✅  ] {msg}")
+def log_warning(msg):  print(f"[{datetime.now():%H:%M:%S}  ⚠️  ] {msg}")
+def log_error(msg):    print(f"[{datetime.now():%H:%M:%S}  ❌  ] {msg}")
+def log_scraping(msg): print(f"[{datetime.now():%H:%M:%S}  🔍  ] {msg}")
+def log_proxy(msg):    print(f"[{datetime.now():%H:%M:%S}  🔌  ] {msg}")
+def log_sizes(msg):    print(f"[{datetime.now():%H:%M:%S}  👟  ] {msg}")
+
+# ============================================================
+# PROXY
+# ============================================================
+
+def build_proxy(session_id: Optional[str] = None) -> Dict[str, str]:
+    if session_id:
+        port = PROXY_PORTS[abs(hash(session_id)) % len(PROXY_PORTS)]
+    else:
+        port = random.choice(PROXY_PORTS)
+    log_proxy(f"Puerto {port} (session: {session_id or 'random'})")
+    return {
+        "server":   f"http://{PROXY_HOST}:{port}",
+        "username": PROXY_USER,
+        "password": PROXY_PASS,
+    }
+
+
+def test_proxy_simple() -> Tuple[bool, Optional[int]]:
+    log_proxy("Testeando proxy...")
+    for port in PROXY_PORTS[:3]:
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    proxy={"server": f"http://{PROXY_HOST}:{port}",
+                           "username": PROXY_USER, "password": PROXY_PASS},
+                    args=["--ignore-certificate-errors"],
+                )
+                page = browser.new_page()
+                resp = page.goto("https://api.ipify.org?format=json", timeout=15_000)
+                if resp and resp.status == 200:
+                    ip = json.loads(page.inner_text("body")).get("ip", "N/A")
+                    browser.close()
+                    log_success(f"Proxy OK — puerto {port} — IP: {ip}")
+                    return True, port
+                browser.close()
+        except Exception as e:
+            log_warning(f"  Puerto {port} falló: {str(e)[:60]}")
+    log_error("No se pudo conectar con ningún puerto del proxy.")
+    return False, None
+
+# ============================================================
+# LECTURA DE EXCEL — "Competencia Meli.xlsx"
+# Formato: múltiples solapas (Botines, Running, Training, etc.)
+# Cada solapa tiene headers en fila 1 con los nombres de marca
+# (Nike, Adidas, Puma, Asics, etc.)
+# ============================================================
+
+# Mapa solapa → nombre de categoría en el output
+SHEET_TO_CATEGORIA = {
+    "Botines":      "FUTBOL",
+    "Running":      "Running",
+    "Training":     "Training",
+    "Sportswear":   "Sportswear",
+    "Indumentaria": "Indumentaria",
+    "Accesorios":   "Accesorios",
+}
+
+# Marcas soportadas (en minúsculas)
+MARCAS_SOPORTADAS = {"nike", "adidas", "puma", "asics", "new balance", "reebok", "under armour"}
+
+
+def read_franchises_from_excel(excel_path: str) -> List[Dict[str, str]]:
+    """
+    Lee "Competencia Meli.xlsx" y devuelve lista de dicts {marca, categoria, franquicia}.
+    Formato: múltiples solapas, headers en fila 1 con nombre de marca por columna.
+    """
+    log_info(f"📖 Leyendo franquicias desde: {excel_path}")
+    if not Path(excel_path).exists():
+        raise FileNotFoundError(f"No existe el archivo: {excel_path}")
+
+    wb = load_workbook(excel_path, data_only=True)
+    franquicias: List[Dict[str, str]] = []
+
+    for sheet_name, categoria in SHEET_TO_CATEGORIA.items():
+        if sheet_name not in wb.sheetnames:
+            log_warning(f"  Solapa '{sheet_name}' no encontrada — saltando")
+            continue
+
+        ws = wb[sheet_name]
+        log_info(f"  📋 Solapa '{sheet_name}' → categoría '{categoria}'")
+
+        # Leer headers de fila 1
+        hdrs = [str(ws.cell(row=1, column=c).value or "").strip().lower()
+                for c in range(1, ws.max_column + 1)]
+        log_info(f"     Headers: {hdrs}")
+
+        # Identificar columnas por marca
+        marca_cols = [
+            (marca_norm, col_idx + 1)
+            for col_idx, marca_norm in enumerate(hdrs)
+            if marca_norm in MARCAS_SOPORTADAS
+        ]
+
+        if not marca_cols:
+            log_warning(f"     No se encontraron columnas de marcas conocidas")
+            continue
+
+        log_info(f"     Marcas encontradas: {[m for m, _ in marca_cols]}")
+
+        for row in range(2, ws.max_row + 1):
+            for marca, col in marca_cols:
+                cell = ws.cell(row=row, column=col).value
+                if cell and str(cell).strip():
+                    franquicias.append({
+                        "marca":      marca,
+                        "categoria":  categoria,
+                        "franquicia": str(cell).strip(),
+                    })
+
+    log_success(f"Total franquicias: {len(franquicias)}")
+    marcas_count = defaultdict(int)
+    cats_count   = defaultdict(int)
+    for f in franquicias:
+        marcas_count[f["marca"]] += 1
+        cats_count[f["categoria"]] += 1
+    for m, n in marcas_count.items():
+        log_info(f"  {m.capitalize()}: {n} franquicias")
+    for c, n in cats_count.items():
+        log_info(f"  {c}: {n} entradas")
+    return franquicias
+
+# ============================================================
+# PARSER DE PRECIO
+# ============================================================
+
+def money_str_to_float(s: str) -> float:
+    if not s:
+        return 0.0
+    raw     = str(s).replace("\xa0", " ").strip()
+    cleaned = re.sub(r"[^\d,.]", "", raw)
+    if not cleaned:
+        return 0.0
+    try:
+        if "." in cleaned and "," in cleaned:
+            return float(cleaned.replace(".", "").replace(",", "."))
+        if "." in cleaned and re.search(r"\d{1,3}(?:\.\d{3})+$", cleaned):
+            return float(cleaned.replace(".", ""))
+        if "." in cleaned:
+            return float(cleaned)
+        if "," in cleaned:
+            return float(cleaned.replace(",", "."))
+        return float(cleaned)
+    except Exception:
+        return 0.0
+
+# ============================================================
+# EXTRACCIÓN DE PRECIOS
+# ============================================================
+
+def extract_prices(page) -> Tuple[Optional[float], Optional[float], Optional[str], Optional[str]]:
+    full_price = final_price = None
+    full_raw   = final_raw   = None
+
+    try:
+        meta = page.locator('meta[itemprop="price"]').first
+        if meta.count() > 0:
+            final_raw   = meta.get_attribute("content")
+            final_price = money_str_to_float(final_raw)
+            log_info(f"    Final price (meta): ${final_price:,.0f}")
+    except Exception:
+        pass
+
+    if not final_price:
+        try:
+            second = page.locator(
+                "span.ui-pdp-price__second-line .andes-money-amount__fraction"
+            ).first
+            if second.count() > 0:
+                final_raw   = second.inner_text()
+                final_price = money_str_to_float(final_raw)
+                log_info(f"    Final price (second line): ${final_price:,.0f}")
+        except Exception:
+            pass
+
+    original_selectors = [
+        "span.ui-pdp-price__original-value .andes-money-amount__fraction",
+        ".ui-pdp-price__original-value .andes-money-amount__fraction",
+        "s .andes-money-amount__fraction",
+        ".andes-money-amount--previous .andes-money-amount__fraction",
+        "[class*='original'] .andes-money-amount__fraction",
+        "[class*='strike'] .andes-money-amount__fraction",
+    ]
+    for sel in original_selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0:
+                full_raw   = loc.inner_text()
+                full_price = money_str_to_float(full_raw)
+                if full_price and full_price > 0:
+                    log_info(f"    Full price (tachado [{sel}]): ${full_price:,.0f}")
+                    break
+        except Exception:
+            continue
+
+    if not full_price and final_price:
+        full_price = final_price
+        full_raw   = final_raw
+        log_info(f"    Full price = Final price (sin descuento): ${full_price:,.0f}")
+
+    return full_price, final_price, full_raw, final_raw
+
+# ============================================================
+# EXTRACCIÓN DE CUOTAS
+# ============================================================
+
+def extract_installments(page, final_price: float) -> int:
+    if not final_price or final_price <= 0:
+        return 0
+    try:
+        text = page.inner_text("body")
+    except Exception:
+        return 0
+
+    mejor = 0
+    patrones = [
+        r"(\d{1,2})\s*cuotas?\s*de\s*\$?\s*([\d\.]+(?:,\d{1,2})?)",
+        r"mismo\s*precio\s*en\s*(\d{1,2})\s*cuotas?\s*de\s*\$?\s*([\d\.]+(?:,\d{1,2})?)",
+    ]
+    for patron in patrones:
+        for m in re.finditer(patron, text, re.IGNORECASE):
+            try:
+                cuotas = int(m.group(1))
+                monto  = money_str_to_float(m.group(2))
+                if cuotas <= 0 or monto <= 0:
+                    continue
+                diff = abs(cuotas * monto - final_price) / final_price
+                if diff <= 0.02 and cuotas > mejor:
+                    mejor = cuotas
+                    log_info(f"    ✓ {cuotas} cuotas (diff {diff:.1%})")
+            except Exception:
+                continue
+    return mejor
+
+# ============================================================
+# EXTRACCIÓN DE TALLES
+# ============================================================
+
+_TEXTOS_IGNORAR = {
+    "elegí", "elegir", "seleccionar", "seleccioná", "ver más",
+    "cantidad", "unidad", "unidades", "",
+}
+
+
+def _is_disabled(item) -> bool:
+    try:
+        if item.get_attribute("disabled"):
+            return True
+        if item.get_attribute("aria-disabled") == "true":
+            return True
+        cls = item.get_attribute("class") or ""
+        if any(k in cls for k in ("disabled", "out-of-stock", "no-stock",
+                                  "unavailable", "selected--disabled")):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _text_es_talle(texto: str) -> bool:
+    if not texto:
+        return False
+    if texto.lower() in _TEXTOS_IGNORAR:
+        return False
+    if re.search(r"\d", texto):
+        return True
+    if re.match(r"^(XXS|XS|S|M|L|XL|XXL|XXXL|XG|GG|EG)$", texto.strip(), re.IGNORECASE):
+        return True
+    return False
+
+
+_JS_LEER_LISTBOX = """
+(function() {
+    var listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+    for (var i = 0; i < listboxes.length; i++) {
+        var lb = listboxes[i];
+        var label = (lb.getAttribute('aria-label') || '').toLowerCase();
+        if (label.indexOf('cantidad') >= 0 || label.indexOf('quantity') >= 0) continue;
+        var options = Array.from(lb.querySelectorAll('[role="option"]'));
+        if (options.length === 0) continue;
+        var disponibles = [];
+        for (var j = 0; j < options.length; j++) {
+            var opt = options[j];
+            if (opt.getAttribute('aria-disabled') === 'true') continue;
+            if (opt.className.indexOf('disabled') >= 0) continue;
+            var text = (opt.textContent || '').trim();
+            if (!text) continue;
+            if (/[0-9]/.test(text) || /^(XS|S|M|L|XL|XXL|XXXL|XG|GG|EG)$/i.test(text)) {
+                disponibles.push(text);
+            }
+        }
+        if (disponibles.length > 0) {
+            return {count: disponibles.length, talles: disponibles.slice(0, 8)};
+        }
+    }
+    return null;
+})()
+"""
+
+_JS_LEER_VISIBLES = """
+(function() {
+    var picker = document.querySelector('[data-testid="PICKER-SIZE"]');
+    if (!picker) return null;
+    var items = Array.from(picker.querySelectorAll('a, button'));
+    var disponibles = [];
+    var ignorar = ['elegi', 'elegir', 'seleccionar', 'selecciona'];
+    for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        if (item.hasAttribute('disabled')) continue;
+        if (item.getAttribute('aria-disabled') === 'true') continue;
+        if (item.className.indexOf('andes-dropdown__trigger') >= 0) continue;
+        var text = (item.textContent || '').trim();
+        if (!text || ignorar.indexOf(text.toLowerCase()) >= 0) {
+            var aria = item.getAttribute('aria-label') || '';
+            var m = aria.match(/([0-9]+(?:[.,][0-9]+)?)/);
+            if (m) text = m[1];
+        }
+        if (!text) continue;
+        if (/[0-9]/.test(text) || /^(XS|S|M|L|XL|XXL|XXXL|XG|GG|EG)$/i.test(text.trim())) {
+            if (ignorar.indexOf(text.toLowerCase()) < 0) {
+                disponibles.push(text);
+            }
+        }
+    }
+    return disponibles.length > 0 ? {count: disponibles.length, talles: disponibles.slice(0, 8)} : null;
+})()
+"""
+
+_JS_CLICK_TRIGGER = """
+(function() {
+    var picker = document.querySelector('[data-testid="PICKER-SIZE"]');
+    if (!picker) return false;
+    var trigger = picker.querySelector('button.andes-dropdown__trigger');
+    if (!trigger) return false;
+    trigger.click();
+    return true;
+})()
+"""
+
+
+def _leer_listbox_via_js(page) -> int:
+    try:
+        resultado = page.evaluate(_JS_LEER_LISTBOX)
+        if resultado and resultado.get("count", 0) > 0:
+            talles = resultado.get("talles", [])
+            log_sizes(f"    {resultado['count']} talles via JS: {', '.join(talles)}{'…' if resultado['count'] > 8 else ''}")
+            return resultado["count"]
+    except Exception as e:
+        log_sizes(f"    JS listbox error: {e}")
+    return 0
+
+
+def _leer_visibles_via_js(page) -> int:
+    try:
+        resultado = page.evaluate(_JS_LEER_VISIBLES)
+        if resultado and resultado.get("count", 0) > 0:
+            talles = resultado.get("talles", [])
+            log_sizes(f"    {resultado['count']} talles visibles JS: {', '.join(talles)}{'…' if resultado['count'] > 8 else ''}")
+            return resultado["count"]
+    except Exception as e:
+        log_sizes(f"    JS visibles error: {e}")
+    return 0
+
+
+def _leer_items_visibles(container) -> int:
+    try:
+        container.evaluate("el => el.scrollLeft = el.scrollWidth")
+        time.sleep(0.4)
+    except Exception:
+        pass
+
+    candidatos = [
+        "a[role='button']",
+        "button:not(.andes-dropdown__trigger)",
+        "[role='button']",
+        "li",
+        ".ui-pdp-outside_variations__thumbnails__item",
+        ".ui-pdp-variations__thumbnail",
+    ]
+    for sel in candidatos:
+        try:
+            items = container.locator(sel).all()
+            if not items:
+                continue
+            disponibles = []
+            for item in items:
+                if _is_disabled(item):
+                    continue
+                try:
+                    texto = item.inner_text().strip()
+                except Exception:
+                    texto = ""
+                if not _text_es_talle(texto):
+                    try:
+                        aria = item.get_attribute("aria-label") or ""
+                        m = re.search(
+                            r"(?:Botón\s+\d+\s+de\s+\d+,\s*\d+,\s*)(.+?)(?:\s+AR|\s+EU|\s+US|\s+UK|$)",
+                            aria, re.IGNORECASE
+                        )
+                        if m:
+                            texto = m.group(1).strip()
+                        else:
+                            m2 = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:AR|EU|US|UK|BR|CM)?", aria)
+                            if m2:
+                                texto = m2.group(1)
+                    except Exception:
+                        pass
+                if _text_es_talle(texto):
+                    disponibles.append(texto)
+            if disponibles:
+                log_sizes(f"    {len(disponibles)} talles visibles [{sel}]: "
+                          f"{', '.join(disponibles[:6])}{'…' if len(disponibles) > 6 else ''}")
+                return len(disponibles)
+        except Exception:
+            continue
+    return 0
+
+
+def _leer_listbox_playwright(page) -> int:
+    selectores_listbox = [
+        "[role='listbox'][aria-label*='Talle'] [role='option']",
+        "[role='listbox'][aria-label*='talle'] [role='option']",
+        "[role='listbox'][aria-label*='Size'] [role='option']",
+        "[role='listbox'][aria-label*='size'] [role='option']",
+    ]
+    for sel in selectores_listbox:
+        try:
+            items = page.locator(sel).all()
+            if not items:
+                continue
+            disponibles = []
+            for item in items:
+                if _is_disabled(item):
+                    continue
+                try:
+                    texto = item.inner_text().strip()
+                except Exception:
+                    texto = ""
+                if _text_es_talle(texto):
+                    disponibles.append(texto)
+            if disponibles:
+                log_sizes(f"    {len(disponibles)} talles [{sel[:40]}]: "
+                          f"{', '.join(disponibles[:6])}{'…' if len(disponibles) > 6 else ''}")
+                return len(disponibles)
+        except Exception:
+            continue
+
+    try:
+        lbs = page.locator("[role='listbox']").all()
+        for lb in lbs:
+            try:
+                label = (lb.get_attribute("aria-label") or "").lower()
+                if "cantidad" in label or "quantity" in label:
+                    continue
+                items = lb.locator("[role='option']").all()
+                disponibles = []
+                for item in items:
+                    if _is_disabled(item):
+                        continue
+                    try:
+                        texto = item.inner_text().strip()
+                    except Exception:
+                        texto = ""
+                    if _text_es_talle(texto):
+                        disponibles.append(texto)
+                if disponibles:
+                    log_sizes(f"    {len(disponibles)} talles [fallback listbox label='{label}']: "
+                              f"{', '.join(disponibles[:6])}{'…' if len(disponibles) > 6 else ''}")
+                    return len(disponibles)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return 0
+
+
+def _extract_sizes_fallback(page) -> int:
+    for sel in [".ui-pdp-outside_variations__picker", ".ui-pdp-variations__picker"]:
+        try:
+            container = page.locator(sel).first
+            if container.count() == 0:
+                continue
+            log_sizes(f"    Fallback contenedor: {sel}")
+            trigger = container.locator("button.andes-dropdown__trigger").first
+            if trigger.count() > 0:
+                trigger.click(timeout=CLICK_TIMEOUT)
+                time.sleep(1.5)
+                count = _leer_listbox_playwright(page)
+                if count > 0:
+                    return count
+            count = _leer_items_visibles(container)
+            if count > 0:
+                return count
+        except Exception:
+            continue
+    return 0
+
+
+def extract_sizes(page) -> Optional[int]:
+    try:
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(0.8)
+        page.evaluate("window.scrollTo(0, 0)")
+        time.sleep(0.5)
+
+        picker = page.locator("[data-testid='PICKER-SIZE']").first
+        if picker.count() == 0:
+            log_sizes("    Sin PICKER-SIZE — buscando fallback...")
+            return _extract_sizes_fallback(page)
+
+        log_sizes("    Contenedor: [data-testid='PICKER-SIZE']")
+
+        trigger = picker.locator("button.andes-dropdown__trigger").first
+        if trigger.count() > 0:
+            log_sizes("    Modo: DROPDOWN")
+            try:
+                try:
+                    page.wait_for_selector(
+                        "[data-testid='PICKER-SIZE'] button.andes-dropdown__trigger",
+                        state="visible", timeout=8000
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+                trigger.click(timeout=CLICK_TIMEOUT)
+
+                listbox_sel = (
+                    "[role='listbox'][aria-label*='Talle'], "
+                    "[role='listbox'][aria-label*='talle'], "
+                    "[role='listbox'][aria-label*='Size']"
+                )
+                try:
+                    page.wait_for_selector(listbox_sel, timeout=10000)
+                except Exception:
+                    time.sleep(3.0)
+
+                count = _leer_listbox_playwright(page)
+                if count > 0:
+                    return count
+
+                log_sizes("    Listbox vacío — reintentando...")
+                try:
+                    trigger2 = page.locator(
+                        "[data-testid='PICKER-SIZE'] button.andes-dropdown__trigger"
+                    ).first
+                    if trigger2.count() > 0:
+                        trigger2.click(timeout=CLICK_TIMEOUT)
+                        try:
+                            page.wait_for_selector(listbox_sel, timeout=8000)
+                        except Exception:
+                            time.sleep(3.0)
+                        count = _leer_listbox_playwright(page)
+                        if count > 0:
+                            return count
+                except Exception:
+                    pass
+
+                log_sizes("    Dropdown ilegible tras retry → None")
+                return None
+
+            except Exception as e:
+                log_sizes(f"    Error click trigger: {e}")
+                return None
+
+        log_sizes("    Modo: VISIBLE")
+        count = _leer_visibles_via_js(page)
+        if count > 0:
+            return count
+        count = _leer_items_visibles(picker)
+        if count > 0:
+            return count
+
+        log_sizes("    Sin talles encontrados")
+        return 0
+
+    except Exception as e:
+        log_sizes(f"    Error en extract_sizes: {e}")
+        return 0
+
+
+def setup_route_blocking(context):
+    def handler(route):
+        try:
+            if route.request.resource_type in ("image", "font", "media"):
+                route.abort()
+            else:
+                route.continue_()
+        except Exception:
+            try:
+                route.continue_()
+            except Exception:
+                pass
+    context.route("**/*", handler)
+    return context
+
+# ============================================================
+# CONSTRUCCIÓN DE URLs
+# ============================================================
+
+CATEGORIAS_ZAPATILLAS = {"running", "training", "sportswear"}
+CATEGORIAS_BOTINES    = {"futbol", "fútbol"}
+CATEGORIAS_CALZADO    = CATEGORIAS_ZAPATILLAS | CATEGORIAS_BOTINES
+
+
+def _prefijo_categoria(categoria: str) -> str:
+    cat_lower = categoria.strip().lower()
+    if cat_lower in CATEGORIAS_BOTINES:
+        return "botines"
+    if cat_lower in CATEGORIAS_ZAPATILLAS:
+        return "zapatillas"
+    return ""
+
+# ============================================================
+# PARSING DE FRANQUICIAS CON COMILLAS
+# ============================================================
+
+def parsear_franquicia(nombre_raw: str) -> dict:
+    nombre = nombre_raw.strip()
+    m_todo = re.match(r'^"([^"]+)"$', nombre)
+    if m_todo:
+        frase = m_todo.group(1).strip().lower()
+        return {
+            "nombre_limpio": m_todo.group(1).strip(),
+            "frase_exacta": frase,
+            "palabras_libres": [],
+            "palabras_obligatorias": [],
+        }
+    palabras_libres      = []
+    palabras_obligatorias = []
+    tokens = re.findall(r'\"([^\"]+)\"|(\S+)', nombre)
+    for quoted, libre in tokens:
+        if quoted:
+            for w in quoted.strip().lower().split():
+                if len(w) > 1:
+                    palabras_obligatorias.append(w)
+        elif libre:
+            w = libre.strip().lower()
+            if len(w) > 1:
+                palabras_libres.append(w)
+    nombre_limpio = re.sub(r'"', '', nombre).strip()
+    return {
+        "nombre_limpio": nombre_limpio,
+        "frase_exacta": None,
+        "palabras_libres": palabras_libres,
+        "palabras_obligatorias": palabras_obligatorias,
+    }
+
+
+def match_franquicia(titulo: str, reglas: dict) -> bool:
+    titulo_lower = titulo.lower()
+
+    if reglas["frase_exacta"]:
+        return reglas["frase_exacta"] in titulo_lower
+
+    for palabra in reglas["palabras_obligatorias"]:
+        if palabra not in titulo_lower:
+            return False
+
+    if reglas["palabras_libres"]:
+        if not any(w in titulo_lower for w in reglas["palabras_libres"]):
+            return False
+
+    return True
+
+
+def build_search_url(marca: str, categoria: str, franquicia: str, page: int = 1) -> str:
+    nombre_limpio = parsear_franquicia(franquicia)["nombre_limpio"]
+    prefijo = _prefijo_categoria(categoria)
+    if prefijo:
+        query = f"{prefijo}-{nombre_limpio}-{marca.capitalize()}".replace(" ", "-")
+    else:
+        query = f"{nombre_limpio}-{marca.capitalize()}".replace(" ", "-")
+
+    if page == 1:
+        return f"https://listado.mercadolibre.com.ar/{query}"
+    offset = (page - 1) * 48 + 1
+    return f"https://listado.mercadolibre.com.ar/{query}_Desde_{offset}_NoIndex_True"
+
+# ============================================================
+# TIENDAS OFICIALES
+# ============================================================
+
+TIENDAS_OFICIALES = {
+    "nike":          ["nike", "tienda nike", "nike argentina", "nike official"],
+    "adidas":        ["adidas", "tienda adidas", "adidas argentina", "adidas official"],
+    "puma":          ["puma", "tienda puma", "puma argentina", "puma official"],
+    "asics":         ["asics", "tienda asics", "asics argentina"],
+    "new balance":   ["new balance", "tienda new balance"],
+    "reebok":        ["reebok", "tienda reebok"],
+    "under armour":  ["under armour", "tienda under armour"],
+}
+
+# Para marcas sin tienda oficial conocida en Meli, se usa búsqueda directa
+TIENDAS_URL_BASE = {
+    "nike":   "https://www.mercadolibre.com.ar/tienda/nike",
+    "adidas": "https://www.mercadolibre.com.ar/tienda/adidas",
+    "puma":   "https://www.mercadolibre.com.ar/tienda/puma",
+    "asics":  "https://www.mercadolibre.com.ar/tienda/asics",
+}
+
+
+def _es_tienda_oficial(item, marca: str) -> bool:
+    try:
+        item_html = item.inner_html().lower()
+        oficial_signals = [
+            "tienda oficial", "official store", "ui-search-official-store",
+            "official-store", "data-official-store",
+        ]
+        for signal in oficial_signals:
+            if signal in item_html:
+                for nombre in TIENDAS_OFICIALES.get(marca.lower(), []):
+                    if nombre in item_html:
+                        return True
+                return False
+        vendedor_selectors = [
+            ".ui-search-official-store-label", ".ui-search-item__store-logo-label",
+            "[class*='official-store']", "[class*='store-label']",
+            ".poly-component__seller", "[class*='seller']",
+        ]
+        for sel in vendedor_selectors:
+            try:
+                el = item.locator(sel).first
+                if el.count() > 0:
+                    vendedor_text = el.inner_text().lower().strip()
+                    for nombre in TIENDAS_OFICIALES.get(marca.lower(), []):
+                        if nombre in vendedor_text:
+                            return True
+                    if vendedor_text:
+                        return False
+            except Exception:
+                continue
+        return True
+    except Exception:
+        return True
+
+
+def search_within_store(page, marca: str, franquicia: str, categoria: str = "") -> bool:
+    nombre_limpio = parsear_franquicia(franquicia)["nombre_limpio"]
+    prefijo = _prefijo_categoria(categoria)
+    query   = f"{prefijo} {nombre_limpio}".strip() if prefijo else nombre_limpio
+
+    store_url = TIENDAS_URL_BASE.get(marca.lower())
+    if not store_url:
+        log_warning(f"No hay URL de tienda para '{marca}' — se usará búsqueda directa")
+        return False
+
+    log_scraping(f"  🏪 Entrando a tienda oficial {marca.upper()} → {store_url}")
+    resp = page.goto(store_url, wait_until="domcontentloaded")
+    if resp and resp.status >= 400:
+        log_warning(f"    Status {resp.status} al cargar la tienda")
+        return False
+
+    time.sleep(2)
+
+    search_input_selectors = [
+        "input[data-testid='search-box']", "input[name='q']",
+        "input[placeholder*='buscar' i]", "input[placeholder*='Buscar' i]",
+        ".nav-search-input", "#search-box",
+        "input[type='search']", "input[type='text'][class*='search']",
+    ]
+
+    input_el = None
+    for sel in search_input_selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0 and loc.is_visible():
+                input_el = loc
+                log_info(f"    🔍 Input encontrado: [{sel}]")
+                break
+        except Exception:
+            continue
+
+    if input_el is None:
+        log_warning(f"    No se encontró el input de búsqueda en la tienda {marca}")
+        return False
+
+    try:
+        input_el.click()
+        time.sleep(0.3)
+        input_el.fill("")
+        input_el.type(query, delay=60)
+        time.sleep(0.5)
+        input_el.press("Enter")
+        log_info(f"    ⌨️  Buscando '{query}' dentro de la tienda...")
+    except Exception as e:
+        log_warning(f"    Error al tipear en el buscador: {e}")
+        return False
+
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT)
+        time.sleep(2)
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(1)
+        page.evaluate("window.scrollTo(0, 0)")
+        time.sleep(0.5)
+    except Exception as e:
+        log_warning(f"    Timeout esperando resultados: {e}")
+
+    log_success(f"    ✅ Búsqueda realizada dentro de la tienda {marca.upper()}")
+    return True
+
+
+def search_direct_url(page, marca: str, franquicia: str, categoria: str = "") -> bool:
+    """Fallback: búsqueda directa por URL (para marcas sin tienda oficial en TIENDAS_URL_BASE)."""
+    url = build_search_url(marca, categoria, franquicia, page=1)
+    log_scraping(f"  🌐 Búsqueda directa: {url}")
+    try:
+        resp = page.goto(url, wait_until="domcontentloaded")
+        if resp and resp.status >= 400:
+            log_warning(f"    Status {resp.status}")
+            return False
+        time.sleep(2)
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(1)
+        page.evaluate("window.scrollTo(0, 0)")
+        time.sleep(0.5)
+        return True
+    except Exception as e:
+        log_warning(f"    Error en búsqueda directa: {e}")
+        return False
+
+
+def extract_mla_from_url(url: str) -> Optional[str]:
+    m = re.search(r"MLA[_-]?(\d+)", url)
+    return m.group(1) if m else None
+
+
+def extract_title_from_url(url: str) -> str:
+    try:
+        for part in url.split("/"):
+            if "MLA-" in part:
+                title = re.sub(r"^MLA-\d+-", "", part)
+                title = re.sub(r"_[A-Z]+$", "", title)
+                return title.replace("-", " ").lower()
+    except Exception:
+        pass
+    return ""
+
+# ============================================================
+# SCRAPEO DE PLP
+# ============================================================
+
+def _scroll_hasta_cargar_todo(page, selector: str, max_intentos: int = 15) -> None:
+    prev_count = 0
+    sin_cambio = 0
+    for intento in range(max_intentos):
+        page.evaluate("window.scrollBy(0, 600)")
+        time.sleep(0.8)
+        count = page.locator(selector).count()
+        log_info(f"    Scroll {intento+1}: {count} items cargados")
+        if count == prev_count:
+            sin_cambio += 1
+            if sin_cambio >= 2:
+                break
+        else:
+            sin_cambio = 0
+        prev_count = count
+    page.evaluate("window.scrollTo(0, 0)")
+    time.sleep(0.5)
+
+
+def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> List[Dict[str, str]]:
+    resultados:  List[Dict[str, str]] = []
+    mlas_vistos: set = set()
+    desc_franq   = 0
+
+    MARCAS_EXCLUIR = ["salomon", "salom"]
+
+    with sync_playwright() as p:
+        session_id = f"plp_{marca}_{franquicia}_{uuid.uuid4().hex[:8]}"
+        browser = p.chromium.launch(
+            headless=False,
+            proxy=build_proxy(session_id),
+            args=["--window-size=1280,900", "--disable-web-security"],
+        )
+        context = setup_route_blocking(browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+            locale="es-AR",
+            java_script_enabled=True,
+        ))
+        page = context.new_page()
+        page.set_default_timeout(NAV_TIMEOUT)
+
+        try:
+            # Intentar primero búsqueda dentro de tienda oficial
+            ok = search_within_store(page, marca, franquicia, categoria)
+            if not ok:
+                # Fallback: búsqueda directa por URL
+                ok = search_direct_url(page, marca, franquicia, categoria)
+            if not ok:
+                log_warning(f"  ⚠️  Falló búsqueda — abortando {marca}/{franquicia}")
+                return resultados
+
+            item_selector = "li.ui-search-layout__item"
+            _scroll_hasta_cargar_todo(page, item_selector)
+            items = page.locator(item_selector).all()
+            if not items:
+                item_selector = ".ui-search-result"
+                _scroll_hasta_cargar_todo(page, item_selector)
+                items = page.locator(item_selector).all()
+
+            log_info(f"    {len(items)} items totales tras scroll")
+
+            reglas_franq = parsear_franquicia(franquicia)
+
+            for item in items:
+                try:
+                    link = item.locator("a").first
+                    if link.count() == 0:
+                        continue
+                    href = link.get_attribute("href")
+                    if not href or "MLA-" not in href:
+                        continue
+
+                    url_prod = href if href.startswith("http") \
+                               else f"https://www.mercadolibre.com.ar{href}"
+                    mla = extract_mla_from_url(url_prod)
+                    if not mla or mla in mlas_vistos:
+                        continue
+
+                    url_lower = url_prod.lower()
+                    if any(m in url_lower for m in MARCAS_EXCLUIR):
+                        continue
+
+                    titulo = extract_title_from_url(url_prod)
+
+                    # Filtro FUTBOL: excluir zapatillas
+                    if categoria.strip().upper() == "FUTBOL":
+                        titulo_check = titulo.lower()
+                        try:
+                            titulo_visible_check = item.locator(
+                                "h2, .poly-component__title, .ui-search-item__title"
+                            ).first.inner_text().strip().lower()
+                        except Exception:
+                            titulo_visible_check = ""
+                        if "zapatilla" in titulo_check or "zapatilla" in titulo_visible_check:
+                            continue
+
+                    # Filtro: franquicia en título
+                    if not match_franquicia(titulo, reglas_franq):
+                        try:
+                            titulo_visible = item.locator(
+                                "h2, .poly-component__title, "
+                                ".ui-search-item__title, [class*='title']"
+                            ).first.inner_text().strip().lower()
+                            if titulo_visible and match_franquicia(titulo_visible, reglas_franq):
+                                log_info(f"      ↩ Fallback título visible: '{titulo_visible[:50]}'")
+                                titulo = titulo_visible
+                            else:
+                                desc_franq += 1
+                                continue
+                        except Exception:
+                            desc_franq += 1
+                            continue
+
+                    mlas_vistos.add(mla)
+                    resultados.append({
+                        "mla":       mla,
+                        "url":       url_prod,
+                        "marca":     marca,
+                        "categoria": categoria,
+                        "franquicia": franquicia,
+                    })
+                    if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
+                        break
+
+                except Exception:
+                    continue
+
+        except Exception as e:
+            log_error(f"  Error en PLP: {e}")
+        finally:
+            browser.close()
+
+    log_success(f"  ✅ {len(resultados)} productos — {desc_franq} descartados por franquicia")
+    return resultados
+
+
+def _resolver_overlap_franquicias(productos: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    mla_franqs: dict = defaultdict(list)
+    for prod in productos:
+        mla_franqs[prod["mla"]].append(prod)
+
+    resultado = []
+    for mla, prods in mla_franqs.items():
+        if len(prods) == 1:
+            resultado.append(prods[0])
+            continue
+
+        url = prods[0].get("url", "")
+        titulo = extract_title_from_url(url)
+
+        def _especificidad(p):
+            r = parsear_franquicia(p["franquicia"])
+            return (len(r["palabras_obligatorias"]) + (1 if r["frase_exacta"] else 0),
+                    len(r["palabras_libres"]))
+        prods_sorted = sorted(prods, key=_especificidad, reverse=True)
+
+        elegida = None
+        for prod in prods_sorted:
+            reglas = parsear_franquicia(prod["franquicia"])
+            if match_franquicia(titulo, reglas):
+                elegida = prod
+                break
+
+        if not elegida:
+            elegida = prods_sorted[0]
+
+        resultado.append(elegida)
+
+    return resultado
+
+
+def collect_all_plps_threaded(
+    franquicias: List[Dict[str, str]],
+    max_workers: int = PLP_WORKERS,
+) -> List[Dict[str, str]]:
+    log_info(f"\n{'='*60}")
+    log_info(f"🔍 SCRAPEO PLPs — {max_workers} threads — {len(franquicias)} búsquedas")
+    log_info(f"{'='*60}")
+
+    todos: List[Dict[str, str]] = []
+    lock  = threading.Lock()
+    start = datetime.now()
+
+    def _worker(f: Dict[str, str]):
+        prods = scrape_plp_for_franchise(f["marca"], f["categoria"], f["franquicia"])
+        with lock:
+            todos.extend(prods)
+            elapsed = (datetime.now() - start).total_seconds()
+            log_info(f"  Acumulado: {len(todos)} productos ({elapsed:.0f}s)")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(_worker, f) for f in franquicias]
+        for fut in as_completed(futures):
+            try:
+                fut.result()
+            except Exception as e:
+                log_error(f"Error en thread PLP: {e}")
+
+    elapsed = (datetime.now() - start).total_seconds()
+    log_success(f"\n✅ TOTAL PLP: {len(todos)} productos en {elapsed:.0f}s")
+    todos = _resolver_overlap_franquicias(todos)
+    log_success(f"✅ Post-dedup overlaps: {len(todos)} productos únicos")
+    return todos
+
+# ============================================================
+# SCRAPEO DE PDP
+# ============================================================
+
+def scrape_pdp(producto: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    with sync_playwright() as p:
+        session_id = f"pdp_{producto['mla']}_{uuid.uuid4().hex[:8]}"
+        browser = p.chromium.launch(
+            headless=False,
+            proxy=build_proxy(session_id),
+            args=["--window-size=1280,900", "--disable-web-security"],
+        )
+        context = setup_route_blocking(browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+            locale="es-AR",
+            java_script_enabled=True,
+        ))
+        page = context.new_page()
+        page.set_default_timeout(NAV_TIMEOUT)
+
+        try:
+            log_scraping(f"    PDP: {producto['mla']}")
+            page.goto(producto["url"], wait_until="domcontentloaded")
+
+            try:
+                page.wait_for_selector(
+                    'meta[itemprop="price"], .andes-money-amount__fraction',
+                    timeout=10000
+                )
+            except Exception:
+                pass
+            time.sleep(1.5)
+
+            # Filtro 1: solo productos NUEVOS
+            try:
+                condicion_el = page.locator(".ui-pdp-subtitle").first
+                if condicion_el.count() > 0:
+                    condicion = condicion_el.inner_text().lower()
+                    if "usado" in condicion or "reacondicionado" in condicion:
+                        log_warning(f"    ✗  Producto usado/reacondicionado — saltando")
+                        return None
+            except Exception:
+                pass
+
+            # Filtro 2: verificar tienda oficial de la marca
+            try:
+                nombres_oficiales = {
+                    m: [m] for m in TIENDAS_OFICIALES
+                }
+                marca_lower = producto["marca"].lower()
+                nombres_ok  = TIENDAS_OFICIALES.get(marca_lower, [marca_lower])
+
+                vendedor_selectors = [
+                    ".ui-pdp-seller__header__title",
+                    ".ui-pdp-seller__header .ui-pdp-color--BLUE",
+                    "[class*='seller__header'] a",
+                    "[class*='seller__link']",
+                    ".ui-pdp-action-modal__title",
+                ]
+                vendedor_confirmado = False
+                for sel in vendedor_selectors:
+                    try:
+                        el = page.locator(sel).first
+                        if el.count() == 0:
+                            continue
+                        vtext = (el.inner_text() or "").lower().strip()
+                        if not vtext:
+                            continue
+                        if any(n in vtext for n in nombres_ok):
+                            log_info(f"    ✅ Tienda oficial: '{vtext}'")
+                            vendedor_confirmado = True
+                            break
+                        if len(vtext) > 3 and not any(n in vtext for n in nombres_ok):
+                            log_warning(f"    ✗  Vendedor '{vtext}' no es tienda oficial — saltando")
+                            return None
+                    except Exception:
+                        continue
+                if not vendedor_confirmado:
+                    log_info(f"    ⚠️  Vendedor no determinado — aceptando")
+            except Exception:
+                pass
+
+            full_price, final_price, full_raw, final_raw = extract_prices(page)
+            if not full_price or not final_price:
+                log_warning(f"    Sin precios — saltando {producto['mla']}")
+                return None
+
+            if final_price > full_price:
+                log_warning(f"    ⚠️  final > full — ajustando full = final")
+                full_price = final_price
+                full_raw   = final_raw
+
+            cuotas = extract_installments(page, final_price)
+            talles = extract_sizes(page)
+
+            resultado = {
+                "mla":          producto["mla"],
+                "url":          producto["url"],
+                "marca":        producto["marca"],
+                "categoria":    producto["categoria"],
+                "franquicia":   producto["franquicia"],
+                "full_price":   full_price,
+                "final_price":  final_price,
+                "full_raw":     full_raw,
+                "final_raw":    final_raw,
+                "cuotas":       cuotas,
+                "talles":       talles,
+                "markdown_pct": (full_price - final_price) / full_price if full_price > 0 else 0,
+                "fecha":        datetime.now().strftime("%Y-%m-%d"),
+            }
+            log_success(f"    ✅ {producto['mla']} — ${final_price:,.0f} — {talles} talles")
+            return resultado
+
+        except Exception as e:
+            log_error(f"    ❌ Error {producto['mla']}: {e}")
+            return None
+        finally:
+            browser.close()
+
+
+def worker_process_pdps(chunk: List[Dict[str, str]], worker_id: int) -> List[Dict[str, Any]]:
+    resultados: List[Dict[str, Any]] = []
+    log_info(f"  Worker {worker_id}: {len(chunk)} PDPs")
+    for i, prod in enumerate(chunk, 1):
+        try:
+            log_info(f"    Worker {worker_id} — {i}/{len(chunk)}")
+            r = scrape_pdp(prod)
+            if r:
+                resultados.append(r)
+            time.sleep(0.5)
+        except Exception as e:
+            log_error(f"  Worker {worker_id} error: {e}")
+    log_info(f"  Worker {worker_id} terminó: {len(resultados)} OK")
+    return resultados
+
+
+def scrape_all_pdps_parallel(
+    productos: List[Dict[str, str]],
+    max_workers: int = PDP_WORKERS,
+) -> List[Dict[str, Any]]:
+    log_info(f"\n{'='*60}")
+    log_info(f"📦 SCRAPEO PDPs — {max_workers} procesos — {len(productos)} productos")
+    log_info(f"{'='*60}")
+    if not productos:
+        return []
+
+    start      = datetime.now()
+    chunk_size = max(1, len(productos) // (max_workers * 2))
+    chunks     = [productos[i:i + chunk_size]
+                  for i in range(0, len(productos), chunk_size)]
+    log_info(f"  {len(chunks)} chunks de ~{chunk_size} productos")
+
+    todos: List[Dict[str, Any]] = []
+    with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(worker_process_pdps, c, i + 1): i
+                   for i, c in enumerate(chunks)}
+        for fut in as_completed(futures):
+            try:
+                res = fut.result(timeout=300)
+                todos.extend(res)
+                elapsed = (datetime.now() - start).total_seconds()
+                log_info(f"  Progreso: {len(todos)} scrapeados ({elapsed:.0f}s)")
+            except Exception as e:
+                log_error(f"Error en worker PDP: {e}")
+
+    elapsed = (datetime.now() - start).total_seconds()
+    log_success(f"\n✅ TOTAL PDPs: {len(todos)} en {elapsed:.0f}s")
+    return todos
+
+
+def rescrape_talles_sospechosos(
+    resultados: List[Dict[str, Any]],
+    max_workers: int = PDP_WORKERS,
+) -> List[Dict[str, Any]]:
+    sospechosos = [r for r in resultados if r.get("talles", 0) == 1]
+    if not sospechosos:
+        log_info("  ✅ No hay productos con 1 solo talle")
+        return resultados
+
+    log_info(f"\n{'='*60}")
+    log_info(f"🔁 RE-SCRAPING TALLES — {len(sospechosos)} productos con talles==1")
+    log_info(f"{'='*60}")
+
+    resultados_dict = {r["mla"]: r for r in resultados}
+
+    productos_input = [
+        {"mla": r["mla"], "url": r["url"],
+         "marca": r["marca"], "categoria": r["categoria"],
+         "franquicia": r["franquicia"]}
+        for r in sospechosos
+    ]
+
+    chunk_size = max(1, len(productos_input) // (max_workers * 2))
+    chunks = [productos_input[i:i + chunk_size]
+              for i in range(0, len(productos_input), chunk_size)]
+
+    mejorados = 0
+    with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(worker_process_pdps, c, i + 1): i
+                   for i, c in enumerate(chunks)}
+        for fut in as_completed(futures):
+            try:
+                nuevos = fut.result(timeout=300)
+                for nuevo in nuevos:
+                    mla = nuevo["mla"]
+                    talles_anterior = resultados_dict[mla]["talles"]
+                    talles_nuevo    = nuevo["talles"]
+                    if talles_nuevo is not None and talles_anterior is not None and talles_nuevo > talles_anterior:
+                        log_success(f"  🔁 {mla}: talles {talles_anterior} → {talles_nuevo} ✅")
+                        resultados_dict[mla] = nuevo
+                        mejorados += 1
+                    else:
+                        log_info(f"  🔁 {mla}: sin mejora ({talles_anterior} → {talles_nuevo})")
+            except Exception as e:
+                log_error(f"  Error en re-scraping talles: {e}")
+
+    log_success(f"  ✅ Re-scraping talles: {mejorados}/{len(sospechosos)} mejorados")
+    return list(resultados_dict.values())
+
+# ============================================================
+# OUTPUT
+# ============================================================
+
+def generar_output(resultados: List[Dict[str, Any]]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    grupos = defaultdict(lambda: {
+        "precios_full": [], "precios_final": [],
+        "cuotas": [], "talles": [], "urls": [],
+    })
+    for r in resultados:
+        key = (r["categoria"], r["marca"], r["franquicia"])
+        grupos[key]["precios_full"].append(r["full_price"])
+        grupos[key]["precios_final"].append(r["final_price"])
+        grupos[key]["cuotas"].append(r["cuotas"])
+        grupos[key]["talles"].append(r["talles"])
+        grupos[key]["urls"].append(r["url"])
+
+    rows_agrupado = []
+    for (cat, marca, franq), data in grupos.items():
+        pf = data["precios_final"]
+        if not pf:
+            continue
+        full_prom     = sum(data["precios_full"]) / len(data["precios_full"])
+        final_prom    = sum(pf) / len(pf)
+        markdown_prom = (full_prom - final_prom) / full_prom if full_prom > 0 else 0
+        talles_validos = [t for t in data["talles"] if t is not None]
+        talles_prom = round(sum(talles_validos) / len(talles_validos), 1) if talles_validos else ""
+        cuotas_validas = [c for c in data["cuotas"] if c]
+        cuotas_prom = round(sum(cuotas_validas) / len(cuotas_validas), 1) if cuotas_validas else ""
+
+        rows_agrupado.append({
+            "Categoría":              cat,
+            "Marca":                  marca.capitalize(),
+            "Franquicia":             franq,
+            "Cantidad MLA":           len(pf),
+            "Full Price Promedio":    f"$ {full_prom:,.0f}".replace(",", "."),
+            "Final Price Promedio":   f"$ {final_prom:,.0f}".replace(",", "."),
+            "Markdown Promedio %":    f"{markdown_prom * 100:.1f}%",
+            "Cuotas Promedio":        cuotas_prom,
+            "Talles Promedio x MLA":  talles_prom,
+            "URL Ejemplo":            data["urls"][0] if data["urls"] else "",
+        })
+
+    df_agrupado = pd.DataFrame(rows_agrupado)
+    if not df_agrupado.empty:
+        df_agrupado["_precio_num"] = (
+            df_agrupado["Final Price Promedio"]
+            .str.replace("$ ", "", regex=False)
+            .str.replace(".", "", regex=False)
+            .astype(float)
+        )
+        df_agrupado = (df_agrupado
+                       .sort_values(["Categoría", "_precio_num"])
+                       .drop(columns=["_precio_num"])
+                       .reset_index(drop=True))
+
+    rows_crudo = []
+    for r in resultados:
+        fp = r["full_price"]
+        fn = r["final_price"]
+        rows_crudo.append({
+            "Categoría":  r["categoria"],
+            "Marca":      r["marca"].capitalize(),
+            "Franquicia": r["franquicia"],
+            "MLA":        r["mla"],
+            "Full Price": f"$ {fp:,.0f}".replace(",", "."),
+            "Final Price":f"$ {fn:,.0f}".replace(",", "."),
+            "Markdown %": f"{(fp - fn) / fp * 100:.1f}%" if fp > 0 else "",
+            "Cuotas":     r["cuotas"],
+            "Talles":     r["talles"] if r["talles"] is not None else "",
+            "URL":        r["url"],
+            "Fecha":      r["fecha"],
+        })
+
+    df_crudo = pd.DataFrame(rows_crudo)
+    return df_agrupado, df_crudo
+
+
+def write_excel(df_agrupado: pd.DataFrame, df_crudo: pd.DataFrame, output_path: str):
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        df_agrupado.to_excel(writer, sheet_name="Resumen por Franquicia", index=False)
+        df_crudo.to_excel(writer,    sheet_name="Todos los Productos",    index=False)
+
+        wb          = writer.book
+        hdr_font    = Font(bold=True, color="FFFFFF")
+        hdr_fill    = PatternFill("solid", fgColor="1E4C7A")
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"),  bottom=Side(style="thin"),
+        )
+
+        for sheet_name in ("Resumen por Franquicia", "Todos los Productos"):
+            ws = wb[sheet_name]
+            for col in range(1, ws.max_column + 1):
+                cell = ws.cell(row=1, column=col)
+                cell.font      = hdr_font
+                cell.fill      = hdr_fill
+                cell.border    = thin_border
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            for col in range(1, ws.max_column + 1):
+                max_len = max(
+                    len(str(ws.cell(row=r, column=col).value or ""))
+                    for r in range(1, min(ws.max_row + 1, 100))
+                )
+                ws.column_dimensions[get_column_letter(col)].width = min(50, max_len + 2)
+
+# ============================================================
+# CACHE
+# ============================================================
+
+class SimpleCache:
+    def __init__(self, cache_dir: str = CACHE_DIR):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+        self.cache: Dict[str, Dict] = {}
+        self._load_all()
+
+    def _path(self, marca: str) -> Path:
+        return self.cache_dir / f"cache_{marca.lower()}.json"
+
+    def _load_all(self):
+        for f in self.cache_dir.glob("cache_*.json"):
+            marca = f.stem.replace("cache_", "")
+            try:
+                self.cache[marca] = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                self.cache[marca] = {}
+        log_info(f"📦 Cache cargado: {sum(len(v) for v in self.cache.values())} entradas")
+
+    def get(self, marca: str, mla: str) -> Optional[Dict]:
+        return self.cache.get(marca, {}).get(mla)
+
+    def set(self, marca: str, mla: str, data: Dict):
+        self.cache.setdefault(marca, {})[mla] = data
+
+    def save_all(self):
+        for marca, data in self.cache.items():
+            self._path(marca).write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        log_info("💾 Cache guardado")
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    # Cambiar a "Running", "Training", etc. para prueba parcial. None = todas.
+    CATEGORIA_FILTRO     = None
+    MAX_PRODUCTOS_PRUEBA = 100
+
+    modo_prueba = CATEGORIA_FILTRO is not None
+
+    print("\n" + "=" * 90)
+    print("🚀  MELI COMPETENCIA SCRAPER — Competencia Meli.xlsx")
+    if modo_prueba:
+        print(f"  🧪  MODO PRUEBA — categoría: {CATEGORIA_FILTRO} "
+              f"(max {MAX_PRODUCTOS_PRUEBA} productos/franquicia)")
+    else:
+        print("  🏭  MODO PRODUCCIÓN — todas las categorías")
+    print("=" * 90)
+    print(f"  📊  Excel     : {DEFAULT_EXCEL_PATH}")
+    print(f"  📡  Proxy     : {PROXY_HOST} (puertos {PROXY_PORTS[0]}–{PROXY_PORTS[-1]})")
+    print(f"  👷  PLP workers: {PLP_WORKERS} threads")
+    print(f"  👷  PDP workers: {PDP_WORKERS} procesos")
+    print("=" * 90 + "\n")
+
+    t0 = datetime.now()
+
+    log_info("🔌 Testeando proxy...")
+    proxy_ok, working_port = test_proxy_simple()
+    if not proxy_ok:
+        resp = input("\n¿Continuar sin proxy? (s/n): ")
+        if resp.strip().lower() != "s":
+            return
+    else:
+        log_success(f"Proxy OK en puerto {working_port}")
+
+    # Diagnóstico del Excel
+    log_info("🔎 Diagnóstico del Excel...")
+    try:
+        from openpyxl import load_workbook as _lw
+        _wb = _lw(DEFAULT_EXCEL_PATH, data_only=True)
+        log_info(f"  Solapas: {_wb.sheetnames}")
+    except Exception as e:
+        log_error(f"  Error en diagnóstico Excel: {e}")
+
+    # Leer franquicias
+    try:
+        franquicias = read_franchises_from_excel(DEFAULT_EXCEL_PATH)
+    except Exception as e:
+        log_error(f"Error leyendo Excel: {e}")
+        return
+    if not franquicias:
+        log_error("No se encontraron franquicias en el Excel.")
+        return
+
+    # Filtro de categoría
+    if CATEGORIA_FILTRO:
+        franquicias = [f for f in franquicias
+                       if f["categoria"].strip().lower() == CATEGORIA_FILTRO.strip().lower()]
+        if not franquicias:
+            log_error(f"No hay franquicias para: {CATEGORIA_FILTRO}")
+            return
+        log_success(f"Filtro: {len(franquicias)} franquicias de '{CATEGORIA_FILTRO}'")
+        for f in franquicias:
+            log_info(f"  → {f['marca'].capitalize()} / {f['franquicia']}")
+
+    global MAX_PRODUCTOS_POR_FRANQUICIA
+    if modo_prueba:
+        MAX_PRODUCTOS_POR_FRANQUICIA = MAX_PRODUCTOS_PRUEBA
+
+    cache = SimpleCache()
+
+    # PLP
+    todos_productos = collect_all_plps_threaded(franquicias)
+    if not todos_productos:
+        log_error("No se encontraron productos en PLPs.")
+        return
+
+    # PDP
+    resultados = scrape_all_pdps_parallel(todos_productos)
+    if not resultados:
+        log_error("No se pudieron scrapear PDPs.")
+        return
+
+    # Re-scraping talles == 1
+    resultados = rescrape_talles_sospechosos(resultados)
+
+    # Filtrar talles == 0
+    antes = len(resultados)
+    resultados = [r for r in resultados if r.get("talles") != 0]
+    eliminados = antes - len(resultados)
+    if eliminados > 0:
+        log_warning(f"  🗑️  {eliminados} productos sin picker de talles eliminados")
+
+    # Guardar en cache
+    for prod in resultados:
+        cache.set(prod["marca"], prod["mla"], prod)
+    cache.save_all()
+
+    # Generar output
+    df_agrupado, df_crudo = generar_output(resultados)
+
+    ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path   = f"meli_competencia_{ts}.csv"
+    excel_path = f"meli_competencia_{ts}.xlsx"
+
+    df_crudo.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    write_excel(df_agrupado, df_crudo, excel_path)
+
+    elapsed = (datetime.now() - t0).total_seconds()
+    print("\n" + "=" * 90)
+    log_success("PIPELINE COMPLETADO")
+    print("=" * 90)
+    log_info(f"⏱️  Tiempo total      : {elapsed:.1f}s")
+    log_info(f"📋  Franquicias       : {len(franquicias)}")
+    log_info(f"🔍  URLs de PLP       : {len(todos_productos)}")
+    log_info(f"📦  PDPs exitosas     : {len(resultados)}")
+    log_info(f"📄  CSV               : {csv_path}")
+    log_info(f"📄  Excel             : {excel_path}")
+    print("=" * 90 + "\n")
+
+    if not df_agrupado.empty:
+        print("\n📋 TOP 10 FRANQUICIAS (por precio):")
+        cols = ["Categoría", "Marca", "Franquicia", "Cantidad MLA",
+                "Final Price Promedio", "Cuotas Promedio", "Talles Promedio x MLA"]
+        print(df_agrupado[cols].head(10).to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()

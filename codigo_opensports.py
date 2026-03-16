@@ -36,7 +36,7 @@ SEASON = "SP26"
 STATUSBOOKS_FILE = "StatusBooks NDDC ARG SP26.xlsb"
 STATUSBOOKS_SHEET = "Books NDDC"
 
-HEADLESS = False
+Headless = True
 AGENTS = max(2, int(os.getenv("AGENTS", "2")))
 
 # 0 = sin limite; 40 para debug rapido

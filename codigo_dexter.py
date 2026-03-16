@@ -38,7 +38,7 @@ SEASON = "SP26"
 STATUSBOOKS_FILE = "StatusBooks NDDC ARG SP26.xlsb"
 STATUSBOOKS_SHEET = "Books NDDC"
 
-HEADLESS = False
+Headless = True
 # --- Performance (multi-agent) ---
 AGENTS = max(2, int(os.getenv('AGENTS', '2')))  # set 1 to disable parallelism
 

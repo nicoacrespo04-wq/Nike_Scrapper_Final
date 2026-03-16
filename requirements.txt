@@ -1,0 +1,11 @@
+playwright
+openpyxl
+pandas
+requests
+nest_asyncio
+aiohttp
+lxml
+beautifulsoup4
+xlrd
+xlwt
+python-dotenv

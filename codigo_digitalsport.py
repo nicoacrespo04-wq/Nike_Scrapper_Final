@@ -89,7 +89,7 @@ AUX_COL_ANIO     = "Año"
 # =========================
 # PERFORMANCE
 # =========================
-HEADLESS = False
+Headless = True
 AGENTS   = int(os.getenv("AGENTS", "3"))
 
 DEBUG_LIMIT  = int(os.getenv("DEBUG_LIMIT",  "0"))   # 0 = sin límite

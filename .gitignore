@@ -1,6 +1,22 @@
-*.xlsb
-*.xlsx
-*.csv
-*.json
+# Python
 __pycache__/
-~$*
+*.pyc
+*.pyo
+.env
+
+# Outputs generados (no subir al repo, se guardan como Artifacts)
+Adidas_Monitoring_*.xlsx
+Adidas_*.csv
+Sporting_*.xlsx
+OpenSports_*.xlsx
+Meli_*.xlsx
+Retail_*.xlsx
+
+# Caches del scraper
+cache_html/
+meli_cache/
+*.json
+
+# Archivos sensibles
+*.xlsb
+StatusBooks*
