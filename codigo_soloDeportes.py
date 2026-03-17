@@ -81,7 +81,7 @@ AUX_COL_GRUPO = "Grupo de carga"
 AUX_COL_ANIO = "Año"
 
 # Performance
-Headless = True
+HEADLESS = True
 AGENTS = int(os.getenv("AGENTS", "3"))  # 3 workers en paralelo (override por ENV)
 
 # Debug/Testing
