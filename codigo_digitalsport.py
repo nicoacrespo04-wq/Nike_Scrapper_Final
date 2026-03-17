@@ -32,7 +32,7 @@ from openai import OpenAI
 # =========================
 # CONFIGURACIÓN OPENAI
 # =========================
-OPENAI_API_KEY = "REMOVED_OPENAI_KEY"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL   = "gpt-4o-mini"
 OPENAI_TIMEOUT_S = 45
 

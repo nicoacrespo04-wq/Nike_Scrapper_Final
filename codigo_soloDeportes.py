@@ -31,7 +31,7 @@ from openai import OpenAI
 # =========================
 
 # OpenAI
-OPENAI_API_KEY = "REMOVED_OPENAI_KEY"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = "gpt-4o-mini"  # Cambiar a "gpt-4o" si necesits ms precisin
 OPENAI_TIMEOUT_S = 45
 
