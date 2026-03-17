@@ -10,3 +10,6 @@ xlrd
 xlwt
 python-dotenv
 pyxlsb
+
+xlsxwriter
+openai
