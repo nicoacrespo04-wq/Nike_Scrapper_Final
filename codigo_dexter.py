@@ -38,7 +38,7 @@ SEASON = "SP26"
 STATUSBOOKS_FILE = "StatusBooks NDDC ARG SP26.xlsb"
 STATUSBOOKS_SHEET = "Books NDDC"
 
-Headless = True
+HEADLESS = True
 # --- Performance (multi-agent) ---
 AGENTS = max(2, int(os.getenv('AGENTS', '2')))  # set 1 to disable parallelism
 
@@ -66,6 +66,7 @@ AUX_COL_ANIO = "Año"
 
 REFRESH_CACHED = True
 VALID_PRICE_MIN = 0.0
+USE_CACHE_URL_FALLBACK = True
 
 BROWSER_RESET_EVERY = 90
 RESET_SLEEP_SECONDS = 8
@@ -1407,13 +1408,24 @@ def main():
             cat = str(r[LINKS_COL_CATEGORY]).strip()
             plp = str(r[LINKS_COL_LINK]).strip()
 
-            try:
-                links = collect_pdp_links_from_plp_no_loadmore(page, plp)
-            except PWTimeoutError:
-                log(f"⚠️ Timeout en PLP: {plp} | Salteo.")
-                continue
-            except Exception as e:
-                log(f"⚠️ Error en PLP: {plp} | {e} | Salteo.")
+            links = []
+            for plp_attempt in range(2):
+                try:
+                    links = collect_pdp_links_from_plp_no_loadmore(page, plp)
+                    break
+                except PWTimeoutError:
+                    if plp_attempt == 0:
+                        browser, context, page = _reset_triplet(0, pw, browser, context, page, reason=f"PLP timeout -> retry ({plp})")
+                        continue
+                    log(f"⚠️ Timeout en PLP: {plp} | Salteo.")
+                except Exception as e:
+                    if plp_attempt == 0 and _is_fatal_nav_error(e):
+                        browser, context, page = _reset_triplet(0, pw, browser, context, page, reason=f"PLP fatal -> retry ({plp})")
+                        continue
+                    log(f"⚠️ Error en PLP: {plp} | {e} | Salteo.")
+                break
+
+            if not links:
                 continue
 
             log(f"✅ PDPs Nike en '{cat}': {len(links)}")
@@ -1446,6 +1458,38 @@ def main():
             browser.close()
         except Exception:
             pass
+
+    plp_styles = len(style_meta)
+
+    if USE_CACHE_URL_FALLBACK and isinstance(cache, dict):
+        added_from_cache = 0
+        for cache_key, rec in cache.items():
+            if not isinstance(rec, dict):
+                continue
+
+            url = str(rec.get("Dexter_URL") or "").strip()
+            if not url.startswith("http"):
+                continue
+
+            style_norm = normalize_stylecolor(str(cache_key).strip().upper())
+            if not style_norm:
+                style_norm = normalize_stylecolor(extract_stylecolor_from_url(url))
+            if not style_norm or style_norm in style_meta:
+                continue
+
+            primary_cat = str(rec.get("PLP_PrimaryCategoria") or "CACHE_FALLBACK").strip() or "CACHE_FALLBACK"
+            source_plp = str(rec.get("PLP_SourcePLP") or "CACHE_FALLBACK").strip() or "CACHE_FALLBACK"
+
+            style_meta[style_norm] = {
+                "last_url": url,
+                "categorias": set([primary_cat]),
+                "primary_cat": primary_cat,
+                "source_plp": source_plp,
+            }
+            added_from_cache += 1
+
+        if added_from_cache > 0:
+            log(f"🧩 Fallback cache: +{added_from_cache} stylecolors (PLP={plp_styles} -> total={len(style_meta)})")
 
     all_styles = list(style_meta.keys())
     log(f"\n✅ Total stylecolors únicos detectados (sin NI): {len(all_styles)}")

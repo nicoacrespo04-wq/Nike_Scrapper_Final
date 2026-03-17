@@ -9,3 +9,4 @@ beautifulsoup4
 xlrd
 xlwt
 python-dotenv
+pyxlsb
