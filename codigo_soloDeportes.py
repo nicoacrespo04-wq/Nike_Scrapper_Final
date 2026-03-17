@@ -53,7 +53,7 @@ CACHE_FILE = os.getenv("SOLO_CACHE_FILE", "solodeportes_cache.json")
 # OpenAI - CORREGIDO: Usar chat.completions no responses.create
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TIMEOUT_S = int(os.getenv("OPENAI_TIMEOUT_S", "30"))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "REMOVED_OPENAI_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # Shipping (placeholders)
 SOLO_FREE_SHIP_FROM_ARS = 149999
