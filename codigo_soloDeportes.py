@@ -842,7 +842,11 @@ def build_cache_from_plps(cache: Dict) -> int:
     total_new = 0
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
+        browser = p.chromium.launch(
+                headless=HEADLESS,
+                args=["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
+                proxy={"server": PROXY_SERVER, "username": PROXY_USERNAME, "password": PROXY_PASSWORD} if PROXY_SERVER else None,
+            )
         context = browser.new_context(
             viewport={"width": 1366, "height": 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -1076,7 +1080,11 @@ def worker_process_pdps(urls_batch: List[str], worker_id: int) -> List[Dict]:
     print(f"   👷 Worker {worker_id} iniciando ({len(urls_batch)} URLs)")
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
+        browser = p.chromium.launch(
+                headless=HEADLESS,
+                args=["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
+                proxy={"server": PROXY_SERVER, "username": PROXY_USERNAME, "password": PROXY_PASSWORD} if PROXY_SERVER else None,
+            )
         context = browser.new_context(
             viewport={"width": 1366, "height": 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
