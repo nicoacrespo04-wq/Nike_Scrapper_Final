@@ -36,9 +36,9 @@ OPENAI_MODEL = "gpt-4o-mini"  # Cambiar a "gpt-4o" si necesits ms precisin
 OPENAI_TIMEOUT_S = 45
 
 # Proxy (opcional)
-PROXY_SERVER = "http://dc.decodo.com:10001"
-PROXY_USERNAME = "sp6g2od2ak"
-PROXY_PASSWORD = "9hbclm71oFtP_8BgAq"
+PROXY_SERVER = "http://proxy.smartproxy.net:3120"
+PROXY_USERNAME = "smart-hysjlehcrm30"
+PROXY_PASSWORD = "GmpKHg6LdhAbs9Tx"
 
 # =========================
 # CONFIGURACIN GENERAL
