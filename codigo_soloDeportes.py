@@ -38,6 +38,9 @@ LINKS_FILE = os.getenv("LINKS_FILE", "Links Retail.xlsx")
 LINKS_SHEET = os.getenv("LINKS_SHEET", "SoloDeportes")
 
 STATUSBOOKS_FILE = os.getenv("STATUSBOOKS_FILE", "StatusBooks NDDC ARG SP26.xlsb")
+PROXY_SERVER   = os.getenv("PROXY_SERVER", "")
+PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
+PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
 
 # Límites
 MAX_PRODUCTS_PER_PLP = 450
