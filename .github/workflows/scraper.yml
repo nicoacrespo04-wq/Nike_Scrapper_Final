@@ -68,7 +68,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-meli-adidas-puma
-          path: "*.xlsx"
+          path: "meli_nike_adidas_puma_*.xlsx"
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -90,17 +90,83 @@ jobs:
           playwright install chromium --with-deps
 
       - name: Correr scraper Meli Nike
-        run: python codigo_meli_nike_mobile_v7_skip_pau....py
+        run: python codigo_meli_nike_mobile_v7_skip_paused.py
 
       - name: Subir outputs Meli Nike
         uses: actions/upload-artifact@v4
         with:
           name: outputs-meli-nike
-          path: "*.xlsx"
+          path: "meli_nike_*.xlsx"
           retention-days: 30
 
   # ─────────────────────────────────────────
-  # 4) RETAIL MEDIA SEARCH
+  # 4) DIGITAL SPORT
+  # ─────────────────────────────────────────
+  digitalsport:
+    name: Digital Sport
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper DigitalSport
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROXY_SERVER:   ${{ secrets.PROXY_SERVER }}
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+        run: python codigo_digitalsport.py
+
+      - name: Subir outputs DigitalSport
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-digitalsport
+          path: "digitalsport_vs_nike_visual_*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 5) SOLO DEPORTES
+  # ─────────────────────────────────────────
+  solodeportes:
+    name: Solo Deportes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper SoloDeportes
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROXY_SERVER:   ${{ secrets.PROXY_SERVER }}
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+        run: python codigo_soloDeportes.py
+
+      - name: Subir outputs SoloDeportes
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-solodeportes
+          path: "solodeportes_vs_nike_visual_*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 6) RETAIL MEDIA SEARCH
   # ─────────────────────────────────────────
   retail-media:
     name: Retail Media Search
@@ -124,11 +190,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-retail-media
-          path: "*.xlsx"
+          path: "retail_media_search_v6_*.xlsx"
           retention-days: 30
 
   # ─────────────────────────────────────────
-  # 5) SPORTING
+  # 7) SPORTING
   # ─────────────────────────────────────────
   sporting:
     name: Sporting
@@ -152,11 +218,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-sporting
-          path: "*.xlsx"
+          path: "sporting_vs_nike_visual_*.xlsx"
           retention-days: 30
 
   # ─────────────────────────────────────────
-  # 6) OPENSPORTS
+  # 8) OPENSPORTS
   # ─────────────────────────────────────────
   opensports:
     name: OpenSports
@@ -180,5 +246,119 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-opensports
-          path: "*.xlsx"
+          path: "opensports_vs_nike_visual_*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 9) DEXTER
+  # ─────────────────────────────────────────
+  dexter:
+    name: Dexter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper Dexter
+        run: python codigo_dexter.py
+
+      - name: Subir outputs Dexter
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-dexter
+          path: "dexter_vs_nike_visual_*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 10) MOOV
+  # ─────────────────────────────────────────
+  moov:
+    name: Moov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper Moov
+        run: python codigo_moov.py
+
+      - name: Subir outputs Moov
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-moov
+          path: "moov_vs_nike_visual_*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 11) STOCK CENTER
+  # ─────────────────────────────────────────
+  stockcenter:
+    name: Stock Center
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper StockCenter
+        run: python codigo_stockcenter_v6.py
+
+      - name: Subir outputs StockCenter
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-stockcenter
+          path: "stockcenter_vs_nike_visual_*.xlsx"
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 12) USA
+  # ─────────────────────────────────────────
+  usa:
+    name: Nike USA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper USA
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python codigo_usa.py
+
+      - name: Subir outputs USA
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-usa
+          path: "Nike_US*.xlsx"
           retention-days: 30
