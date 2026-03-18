@@ -96,7 +96,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-meli-nike
-          path: "meli_nike_*.xlsx"
+          path: "meli_vs_nike_*.xlsx"
           retention-days: 30
 
   # ─────────────────────────────────────────
