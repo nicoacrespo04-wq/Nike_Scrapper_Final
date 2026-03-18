@@ -82,7 +82,7 @@ CACHE_TTL_DAYS = 0
 REFRESH_CACHED_DEFAULT = False
 
 # Playwright
-DEFAULT_HEADLESS = True
+DEFAULT_HEADLESS = False
 DEFAULT_NAV_TIMEOUT_MS = 90_000
 
 # Rotación de IP por bloqueo
@@ -127,15 +127,15 @@ TUNNEL_ERROR_PATTERNS = [
 # DECODO PROXY CONFIGURATION (MOBILE)
 # ============================================================
 
-# Smartproxy endpoint
-DECODO_HOST = "proxy.smartproxy.net"
+# Decodo Mobile proxies usan gate.decodo.com + puertos por endpoint
+DECODO_HOST = "gate.decodo.com"
 
-# Single endpoint port
-DECODO_PORTS = [3120]
+# En tu panel tenés 10 endpoints: 10001..10010
+DECODO_PORTS = list(range(10001, 10011))
 
-# Smartproxy credentials
-DECODO_USER = "smart-hysjlehcrm30"
-DECODO_PASS = "GmpKHg6LdhAbs9Tx"
+# Credenciales Mobile (del panel)
+DECODO_USER = "sp6g2od2ak"
+DECODO_PASS = "9hbclm71oFtP_8BgAq"  # <- tu password Mobile
 
 # Mantengo USERNAME_VARIANTS para NO tocar la lógica de test híbrido
 # (pero en Mobile no hace falta probar variantes: es 1 solo username)
