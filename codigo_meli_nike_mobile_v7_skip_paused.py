@@ -127,15 +127,15 @@ TUNNEL_ERROR_PATTERNS = [
 # DECODO PROXY CONFIGURATION (MOBILE)
 # ============================================================
 
-# Decodo Mobile proxies usan gate.decodo.com + puertos por endpoint
-DECODO_HOST = "gate.decodo.com"
+# Smartproxy endpoint
+DECODO_HOST = "proxy.smartproxy.net"
 
-# En tu panel tenés 10 endpoints: 10001..10010
-DECODO_PORTS = list(range(10001, 10011))
+# Single endpoint port
+DECODO_PORTS = [3120]
 
-# Credenciales Mobile (del panel)
-DECODO_USER = "sp6g2od2ak"
-DECODO_PASS = "9hbclm71oFtP_8BgAq"  # <- tu password Mobile
+# Smartproxy credentials
+DECODO_USER = "smart-hysjlehcrm30"
+DECODO_PASS = "GmpKHg6LdhAbs9Tx"
 
 # Mantengo USERNAME_VARIANTS para NO tocar la lógica de test híbrido
 # (pero en Mobile no hace falta probar variantes: es 1 solo username)
