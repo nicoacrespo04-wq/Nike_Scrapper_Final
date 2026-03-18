@@ -45,10 +45,10 @@ OUT_XLSX = f"retail_media_search_v6_{TS}.xlsx"
 OUT_CSV  = f"retail_media_search_v6_{TS}.csv"
 
 # --- PROXY RESIDENCIAL (MercadoLibre) ---
-RESI_HOST  = "gate.decodo.com"
-RESI_PORTS = list(range(10001, 10011))
-RESI_USER  = "spyrndvq0x"
-RESI_PASS  = "8eOzLZZj3i3b=mcoc8"
+RESI_HOST  = "proxy.smartproxy.net"
+RESI_PORTS = [3120]
+RESI_USER  = "smart-hysjlehcrm30"
+RESI_PASS  = "GmpKHg6LdhAbs9Tx"
 
 def proxy_resi() -> dict:
     port = random.choice(RESI_PORTS)
