@@ -38,9 +38,6 @@ LINKS_FILE = os.getenv("LINKS_FILE", "Links Retail.xlsx")
 LINKS_SHEET = os.getenv("LINKS_SHEET", "SoloDeportes")
 
 STATUSBOOKS_FILE = os.getenv("STATUSBOOKS_FILE", "StatusBooks NDDC ARG SP26.xlsb")
-PROXY_SERVER   = os.getenv("PROXY_SERVER", "")
-PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
-PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
 
 # Límites
 MAX_PRODUCTS_PER_PLP = 450
@@ -56,7 +53,7 @@ CACHE_FILE = os.getenv("SOLO_CACHE_FILE", "solodeportes_cache.json")
 # OpenAI - CORREGIDO: Usar chat.completions no responses.create
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TIMEOUT_S = int(os.getenv("OPENAI_TIMEOUT_S", "30"))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "REMOVED_OPENAI_KEY")
 
 # Shipping (placeholders)
 SOLO_FREE_SHIP_FROM_ARS = 149999
@@ -845,11 +842,7 @@ def build_cache_from_plps(cache: Dict) -> int:
     total_new = 0
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-                headless=HEADLESS,
-                args=["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
-                proxy={"server": PROXY_SERVER, "username": PROXY_USERNAME, "password": PROXY_PASSWORD} if PROXY_SERVER else None,
-            )
+        browser = p.chromium.launch(headless=HEADLESS)
         context = browser.new_context(
             viewport={"width": 1366, "height": 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -1083,11 +1076,7 @@ def worker_process_pdps(urls_batch: List[str], worker_id: int) -> List[Dict]:
     print(f"   👷 Worker {worker_id} iniciando ({len(urls_batch)} URLs)")
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-                headless=HEADLESS,
-                args=["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
-                proxy={"server": PROXY_SERVER, "username": PROXY_USERNAME, "password": PROXY_PASSWORD} if PROXY_SERVER else None,
-            )
+        browser = p.chromium.launch(headless=HEADLESS)
         context = browser.new_context(
             viewport={"width": 1366, "height": 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
