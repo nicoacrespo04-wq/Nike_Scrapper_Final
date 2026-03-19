@@ -73,7 +73,6 @@ SEARCH_QUERIES = [
     "botines futsal",
     "botines niño",
     # Lifestyle (5)
-    "zapatillas urbanas",
     "zapatillas blancas",
     "zapatillas negras",
     "sneakers",
