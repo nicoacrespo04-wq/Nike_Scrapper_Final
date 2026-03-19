@@ -70,7 +70,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-meli-adidas-puma
-          path: "meli_nike_adidas_puma_*.xlsx"
+          path: |
+            meli_nike_adidas_puma_*.xlsx
+            meli_nike_adidas_puma_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -99,7 +101,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-meli-nike
-          path: "meli_nike_*.xlsx"
+          path: |
+            meli_vs_nike_*.xlsx
+            meli_vs_nike_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -133,7 +137,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-digitalsport
-          path: "digitalsport_vs_nike_visual_*.xlsx"
+          path: |
+            digitalsport_vs_nike_visual_*.xlsx
+            digitalsport_vs_nike_raw_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -168,8 +174,20 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-solodeportes
-          path: "solodeportes_vs_nike_visual_*.xlsx"
+          path: |
+            solodeportes_vs_nike_*.xlsx
+            solodeportes_vs_nike_*.csv
           retention-days: 30
+
+      # Persistir cache en el repo para evitar reconstruirlo cada semana
+      - name: Guardar cache SoloDeportes en repo
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f solodeportes_cache.json || true
+          git diff --staged --quiet || git commit -m "chore: update solodeportes cache [skip ci]"
+          git push || true
 
   # ─────────────────────────────────────────
   # 6) RETAIL MEDIA SEARCH
@@ -197,7 +215,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-retail-media
-          path: "retail_media_search_v6_*.xlsx"
+          path: |
+            retail_media_search_v6_*.xlsx
+            retail_media_search_v6_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -226,7 +246,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-sporting
-          path: "sporting_vs_nike_visual_*.xlsx"
+          path: |
+            sporting_vs_nike_visual_*.xlsx
+            sporting_vs_nike_raw_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -255,7 +277,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-opensports
-          path: "opensports_vs_nike_visual_*.xlsx"
+          path: |
+            opensports_vs_nike_visual_*.xlsx
+            opensports_vs_nike_raw_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -284,7 +308,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-dexter
-          path: "dexter_vs_nike_visual_*.xlsx"
+          path: |
+            dexter_vs_nike_visual_*.xlsx
+            dexter_vs_nike_raw_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -313,7 +339,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-moov
-          path: "moov_vs_nike_visual_*.xlsx"
+          path: |
+            moov_vs_nike_visual_*.xlsx
+            moov_vs_nike_raw_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -342,7 +370,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-stockcenter
-          path: "stockcenter_vs_nike_visual_*.xlsx"
+          path: |
+            stockcenter_vs_nike_visual_*.xlsx
+            stockcenter_vs_nike_raw_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
@@ -373,5 +403,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: outputs-usa
-          path: "Nike_US*.xlsx"
+          path: |
+            Nike_US*.xlsx
+            Nike_US*.csv
           retention-days: 30

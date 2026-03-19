@@ -1,22 +1,55 @@
+# ─────────────────────────────────────────
 # Python
+# ─────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+
+# ─────────────────────────────────────────
+# Entorno local
+# ─────────────────────────────────────────
 .env
 
-# Outputs generados (no subir al repo, se guardan como Artifacts)
-Adidas_Monitoring_*.xlsx
-Adidas_*.csv
-Sporting_*.xlsx
-OpenSports_*.xlsx
-Meli_*.xlsx
-Retail_*.xlsx
+# ─────────────────────────────────────────
+# Outputs de scraping — van como Artifacts
+# ─────────────────────────────────────────
+*.csv
+~$*.xlsx
+Adidas_*.xlsx
+meli_nike_adidas_puma_*.xlsx
+meli_vs_nike_*.xlsx
+meli_nike_*.xlsx
+dexter_*.xlsx
+moov_*.xlsx
+solodeportes_*.xlsx
+opensports_*.xlsx
+sporting_*.xlsx
+stockcenter_*.xlsx
+digitalsport_*.xlsx
+retail_media_search_v6_*.xlsx
+Nike_US*.xlsx
 
-# Caches del scraper
+# ─────────────────────────────────────────
+# Caches HTML de Adidas — pesados y regenerables
+# ─────────────────────────────────────────
 cache_html/
-meli_cache/
-*.json
 
-# Archivos sensibles
-*.xlsb
-StatusBooks*
+# ─────────────────────────────────────────
+# Cache interno de Meli (subcarpeta)
+# ─────────────────────────────────────────
+meli_cache/
+
+# ─────────────────────────────────────────
+# Backup local
+# ─────────────────────────────────────────
+Backup/
+
+# ─────────────────────────────────────────
+# Scripts de fix temporales
+# ─────────────────────────────────────────
+fix_*.py
+
+# ─────────────────────────────────────────
+# Archivos temporales de Windows
+# ─────────────────────────────────────────
+_temp_*.csv

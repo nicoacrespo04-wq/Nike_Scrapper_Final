@@ -42,11 +42,11 @@ SEASON           = "SP26"
 STATUSBOOKS_PATH = "StatusBooks NDDC ARG SP26.xlsb"
 COMPARATIVA_PATH = "Comparativa_Nike_Adidas.xlsx"
 
-# Proxy AR — residencial sticky
-AR_HOST  = "proxy.smartproxy.net"
-AR_PORTS = [3120]
-AR_USER  = "smart-hysjlehcrm30"
-AR_PASS  = "GmpKHg6LdhAbs9Tx"
+# Proxy AR — Decodo Site Unblocker (validado)
+AR_HOST  = "unblock.decodo.com"
+AR_PORTS = [60000]
+AR_USER  = "U0000358219"
+AR_PASS  = "PW_13c62a6853fe2bb0a6b377b55a4e8d8ec"
 
 # Proxy US — Site Unblocker
 UB_HOST  = "unblock.decodo.com"
@@ -411,6 +411,75 @@ NEXT_DATA_JS = """
 }
 """
 
+AR_DOM_PRODUCTS_JS = """
+() => {
+    const normPrice = (txt) => {
+        if (!txt) return 0;
+        const cleaned = String(txt)
+            .replace(/\s+/g, ' ')
+            .replace(/\./g, '')
+            .replace(/,/g, '.')
+            .replace(/[^\d.]/g, '');
+        const n = parseFloat(cleaned);
+        return Number.isFinite(n) ? n : 0;
+    };
+
+    const pickName = (card) => {
+        const sel = [
+            '[data-auto-id="product-title"]',
+            '[data-auto-id="product-name"]',
+            '[data-testid="product-card-primary-link"] span',
+            'h3',
+            'h4',
+            'a[title]'
+        ];
+        for (const s of sel) {
+            const el = card.querySelector(s);
+            const t = (el?.textContent || el?.getAttribute?.('title') || '').trim();
+            if (t) return t;
+        }
+        return '';
+    };
+
+    const pickUrl = (card) => {
+        const a = card.querySelector('a[href]');
+        if (!a) return '';
+        const href = a.getAttribute('href') || '';
+        if (!href) return '';
+        return href.startsWith('http') ? href : ('https://www.adidas.com.ar' + href);
+    };
+
+    const cards = Array.from(document.querySelectorAll(
+        '[data-auto-id="product-tile"], article[data-testid*="product"], article, .gl-product-card'
+    ));
+    const out = [];
+    const seen = new Set();
+
+    for (const card of cards) {
+        const name = pickName(card);
+        const url = pickUrl(card);
+        if (!name || !url || seen.has(url)) continue;
+
+        const priceNodes = Array.from(card.querySelectorAll(
+            '[data-auto-id="product-price"], [data-testid*="price"], .gl-price-item, [class*="price"]'
+        ));
+        const nums = [];
+        for (const node of priceNodes) {
+            const n = normPrice(node.textContent || '');
+            if (n > 0) nums.push(n);
+        }
+        if (!nums.length) continue;
+
+        const full = Math.max(...nums);
+        const final = Math.min(...nums);
+        out.push({ name, url, full_price: full, final_price: final, currency: 'ARS' });
+        seen.add(url);
+    }
+
+    return out;
+}
+"""
+
 # Señales inequívocas de challenge — NO incluir "adidas" solo porque
 # muchas PLPs válidas tienen ese título mientras cargan
 CHALLENGE_SIGNALS = [
@@ -449,11 +518,12 @@ async def build_ar_browser(pw, exclude_ports: List[int] = None):
     browser = await pw.chromium.launch(
         headless=HEADLESS, proxy=proxy,
         args=["--disable-blink-features=AutomationControlled", "--no-sandbox",
-              "--disable-dev-shm-usage"],
+              "--disable-dev-shm-usage", "--ignore-certificate-errors"],
     )
     context = await browser.new_context(
         locale="es-AR", timezone_id="America/Argentina/Buenos_Aires",
         user_agent=ua, viewport={"width": 1920, "height": 1080},
+        ignore_https_errors=True,
         extra_http_headers={
             "Accept-Language": "es-AR,es;q=0.9",
             "sec-ch-ua-mobile": "?0",
@@ -470,14 +540,18 @@ async def build_ar_browser(pw, exclude_ports: List[int] = None):
 
 
 async def warmup_ar(page) -> bool:
-    for attempt in range(2):
+    warmup_urls = [
+        f"{BASE_AR}/zapatillas",
+        BASE_AR,
+    ]
+    for attempt, warmup_url in enumerate(warmup_urls, start=1):
         try:
-            await page.goto(f"{BASE_AR}/ayuda", wait_until="domcontentloaded", timeout=TO_WARMUP_AR)
+            await page.goto(warmup_url, wait_until="commit", timeout=TO_WARMUP_AR)
             await asyncio.sleep(random.uniform(1.5, 2.5))
-            log("   ✅ Warmup AR OK")
+            log(f"   ✅ Warmup AR OK — {warmup_url}")
             return True
         except Exception as e:
-            log(f"   ⚠️  Warmup AR fallo (intento {attempt+1}): {str(e)[:60]}")
+            log(f"   ⚠️  Warmup AR fallo (intento {attempt}): {str(e)[:60]}")
             await asyncio.sleep(2)
     return False
 
@@ -492,6 +566,13 @@ async def wait_next_data_ar(page, max_wait: int = TO_NEXT_DATA_AR) -> List[dict]
             if products:
                 log(f"   ✅ __NEXT_DATA__ OK — {len(products)} productos (intento {attempt})")
                 return products
+
+            # Fallback: en algunas PLPs AR no hidrata __NEXT_DATA__, pero sí renderiza cards en DOM.
+            dom_products = await page.evaluate(AR_DOM_PRODUCTS_JS)
+            if dom_products:
+                log(f"   ✅ DOM fallback AR OK — {len(dom_products)} productos (intento {attempt})")
+                return dom_products
+
             log(f"   ⏳ vacío (intento {attempt})")
         except Exception as e:
             log(f"   ⚠️  eval: {str(e)[:60]}")

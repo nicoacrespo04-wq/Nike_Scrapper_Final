@@ -66,17 +66,16 @@ SEARCH_QUERIES = [
     # Training (3)
     "zapatillas training",
     "zapatillas gym",
-    "zapatillas crossfit",
+    "zapatillas gimnasio",
     # Futbol (4)
     "botines de futbol",
     "botines futbol hombre",
     "botines futsal",
-    "botines sala",
+    "botines niño",
     # Lifestyle (5)
     "zapatillas urbanas",
     "zapatillas blancas",
     "zapatillas negras",
-    "zapatillas casual",
     "sneakers",
     # Kids (1)
     "zapatillas ninos",
@@ -85,6 +84,7 @@ SEARCH_QUERIES = [
     "campera deportiva",
     "buzo deportivo",
     "short deportivo",
+    "pantalon deportivo"
     "ropa deportiva",
     # Outdoor (4)
     "zapatillas trail",
@@ -94,6 +94,8 @@ SEARCH_QUERIES = [
     # Accesorios (2)
     "mochila deportiva",
     "medias deportivas",
+    "bolso deportivo"
+
     # Basquet (1)
     "zapatillas basquet",
 ]
