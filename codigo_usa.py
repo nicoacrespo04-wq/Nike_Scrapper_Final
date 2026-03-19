@@ -59,6 +59,8 @@ NIKE_BASE = "https://www.nike.com/w"
 KIDS_RE = re.compile(r"(kid|boy|girl|youth|junior)", re.I)
 GTX_RE = re.compile(r"\b(gtx|gore\s*tex|gore-tex)\b", re.I)
 
+WANTED_NONFOOTBALL_LINK_SHEETS = {"running", "sportswear", "training", "jordan", "basketball"}
+
 ALLOWED_SINGLE_TOKEN_SLASH_SUFFIX = {
     "mid", "low", "high", "premium", "retro", "next", "platform",
     "vintage", "lx", "se", "sp", "lt",
@@ -469,6 +471,13 @@ def load_links_sheets(path: str) -> Dict[str, pd.DataFrame]:
         sheets[sh] = df
         log(f"   Sheet '{sh}': {len(df)} filas, columnas: {list(df.columns)}")
     return sheets
+
+
+def selected_nonfootball_link_sheets(links_sheets: Dict[str, pd.DataFrame]) -> List[str]:
+    return [
+        sh for sh in links_sheets.keys()
+        if str(sh).strip().lower() in WANTED_NONFOOTBALL_LINK_SHEETS
+    ]
 
 
 # -------------------------------------------------------------------
@@ -1299,9 +1308,7 @@ def build_nonfootball_output(
     out_rows: List[Dict[str, Any]] = []
     df_nf = filter_nonfootball_sb(df_sb)
 
-    for sheet in ["Running", "Sportswear", "Training"]:
-        if sheet not in links_sheets:
-            continue
+    for sheet in selected_nonfootball_link_sheets(links_sheets):
         
         df_links = links_sheets[sheet].copy()
         df_links.columns = [str(c).strip() for c in df_links.columns]
@@ -1475,9 +1482,7 @@ def build_kids_output(
 
     log(f"\n👦 [KIDS] StatusBooks kids: {len(df_kids)} filas")
 
-    for sheet in ["Running", "Sportswear", "Training"]:
-        if sheet not in links_sheets:
-            continue
+    for sheet in selected_nonfootball_link_sheets(links_sheets):
 
         df_links = links_sheets[sheet].copy()
         df_links.columns = [str(c).strip() for c in df_links.columns]
@@ -1496,6 +1501,10 @@ def build_kids_output(
             franquicia = str(r.get("Franquicia", "")).strip()
             if not franquicia:
                 continue
+
+            franquicia_match = re.sub(r"\s*\bkids?\b\s*", " ", franquicia, flags=re.I).strip()
+            if not franquicia_match:
+                franquicia_match = franquicia
 
             log(f"\n   🔍 [KIDS] Procesando: '{franquicia}'")
 
@@ -1540,7 +1549,7 @@ def build_kids_output(
                 log(f"      Total productos encontrados: {len(products)}")
 
                 if products:
-                    pick = choose_product_from_plp(products, franquicia, valid_styles, style_meta_map)
+                    pick = choose_product_from_plp(products, franquicia_match, valid_styles, style_meta_map)
                 else:
                     log(f"      ⚠️ No se encontraron productos en la PLP")
 
@@ -1566,7 +1575,7 @@ def build_kids_output(
                 combined = list(dedup.values())
                 log(f"      🧩 UI Search products (post-filter): {len(combined)}")
                 if combined:
-                    pick = choose_product_from_plp(combined, franquicia, valid_styles, style_meta_map)
+                    pick = choose_product_from_plp(combined, franquicia_match, valid_styles, style_meta_map)
 
             if pick is None:
                 log(f"      ❌ No se encontró producto válido para '{franquicia}'")

@@ -218,10 +218,30 @@ def parse_stock_bl_to_float(v) -> float:
 
 
 def atomic_write_json(path: str, data: dict):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+
+        last_exc = None
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError as e:
+                last_exc = e
+                time.sleep(0.05 * (attempt + 1))
+
+        if last_exc:
+            raise last_exc
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
 
 
 def load_cache(path: str) -> dict:

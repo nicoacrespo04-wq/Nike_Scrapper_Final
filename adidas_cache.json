@@ -1,0 +1,54 @@
+{
+  "ADIZERO ADIOS PRO|||https://www.adidas.com.ar/search?q=ADIZERO+ADIOS+PRO|https://www.adidas.com/us/search?q=adizero+adios+pro&sitePath=us": {
+    "ar": null,
+    "us": null
+  },
+  "ULTRABOOST|||https://www.adidas.com.ar/search?q=ULTRABOOST|https://www.adidas.com/us/search?q=ultraboost&sitePath=us": {
+    "ar": null,
+    "us": null
+  },
+  "ADIZERO BOSTON|||https://www.adidas.com.ar/search?q=ADIZERO+BOSTON|https://www.adidas.com/us/search?q=adizero+boston&sitePath=us": {
+    "ar": null,
+    "us": null
+  },
+  "ADISTAR|||https://www.adidas.com.ar/search?q=ADISTAR|https://www.adidas.com/us/search?q=adistar&sitePath=us": {
+    "ar": null,
+    "us": null
+  },
+  "ADIZERO ADIOS PRO": {
+    "Nike_Franchise": "VAPORFLY",
+    "Adidas_Franchise": "ADIZERO ADIOS PRO",
+    "Categoria": "Running",
+    "Adidas_Name": "Zapatillas Adios Pro 4 Adizero",
+    "Adidas_URL": "https://www.adidas.com.ar/zapatillas-adios-pro-4-adizero/JQ1690.html",
+    "Adidas_FullPrice": 419999,
+    "Adidas_FinalPrice": 419999,
+    "Adidas_SaleDecimal": 0.0,
+    "LastUpdated": "2026-03-06 10:59:07",
+    "Scrape_OK": true
+  },
+  "ULTRABOOST": {
+    "Nike_Franchise": "PEGASUS \"PLUS\"",
+    "Adidas_Franchise": "ULTRABOOST",
+    "Categoria": "Running",
+    "Adidas_Name": "Zapatillas Ultraboost 5",
+    "Adidas_URL": "https://www.adidas.com.ar/zapatillas-ultraboost-5/ID8848.html",
+    "Adidas_FullPrice": 299999,
+    "Adidas_FinalPrice": 299999,
+    "Adidas_SaleDecimal": 0.0,
+    "LastUpdated": "2026-03-06 10:59:16",
+    "Scrape_OK": true
+  },
+  "ADIZERO \"BOSTON\"": {
+    "Nike_Franchise": "\"ZOOM FLY\"",
+    "Adidas_Franchise": "ADIZERO \"BOSTON\"",
+    "Categoria": "Running",
+    "Adidas_Name": "",
+    "Adidas_URL": "",
+    "Adidas_FullPrice": 0,
+    "Adidas_FinalPrice": 0,
+    "Adidas_SaleDecimal": 0.0,
+    "LastUpdated": "2026-03-06 11:03:47",
+    "Scrape_OK": false
+  }
+}
