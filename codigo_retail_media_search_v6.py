@@ -84,7 +84,7 @@ SEARCH_QUERIES = [
     "campera deportiva",
     "buzo deportivo",
     "short deportivo",
-    "pantalon deportivo"
+    "pantalon deportivo",
     "ropa deportiva",
     # Outdoor (4)
     "zapatillas trail",
@@ -94,7 +94,7 @@ SEARCH_QUERIES = [
     # Accesorios (2)
     "mochila deportiva",
     "medias deportivas",
-    "bolso deportivo"
+    "bolso deportivo",
 
     # Basquet (1)
     "zapatillas basquet",
