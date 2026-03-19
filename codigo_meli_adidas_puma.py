@@ -1232,7 +1232,7 @@ def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> Lis
     with sync_playwright() as p:
         session_id = f"plp_{marca}_{franquicia}_{uuid.uuid4().hex[:8]}"
         browser = p.chromium.launch(
-            headless=False,
+            headless=True,
             proxy=build_proxy(session_id),
             args=["--window-size=1280,900", "--disable-web-security"],
         )
@@ -1452,7 +1452,7 @@ def scrape_pdp(producto: Dict[str, str]) -> Optional[Dict[str, Any]]:
     with sync_playwright() as p:
         session_id = f"pdp_{producto['mla']}_{uuid.uuid4().hex[:8]}"
         browser = p.chromium.launch(
-            headless=False,
+            headless=True,
             proxy=build_proxy(session_id),
             args=["--window-size=1280,900", "--disable-web-security"],
         )
