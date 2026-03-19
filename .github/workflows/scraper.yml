@@ -376,7 +376,40 @@ jobs:
           retention-days: 30
 
   # ─────────────────────────────────────────
-  # 12) USA
+  # 12) URU
+  # ─────────────────────────────────────────
+  uru:
+    name: Nike URU
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Correr scraper URU
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python codigo_uru.py
+
+      - name: Subir outputs URU
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-uru
+          path: |
+            Nike_US_UY_*.xlsx
+            Nike_US_UY_*.csv
+          retention-days: 30
+
+  # ─────────────────────────────────────────
+  # 13) USA
   # ─────────────────────────────────────────
   usa:
     name: Nike USA
