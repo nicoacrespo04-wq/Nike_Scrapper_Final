@@ -124,13 +124,22 @@ def bml_pct(competitor: Optional[float], nike: Optional[float]) -> Optional[str]
     return f"{sign}{pct:.1f}%"
 
 def load_json(path: str) -> Dict[str, Any]:
+    default = {"by_sku": {}, "meta": {"created": now_str(), "version": 2}}
     if not os.path.exists(path):
-        return {"by_sku": {}, "meta": {"created": now_str(), "version": 2}}
+        return default
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # Garantizar estructura correcta aunque el JSON esté vacío o corrupto
+        if not isinstance(data, dict):
+            return default
+        if "by_sku" not in data:
+            data["by_sku"] = {}
+        if "meta" not in data:
+            data["meta"] = {"created": now_str(), "version": 2}
+        return data
     except Exception:
-        return {"by_sku": {}, "meta": {"created": now_str(), "version": 2}}
+        return default
 
 def save_json(path: str, data: Dict[str, Any]) -> None:
     tmp = path + ".tmp"
@@ -877,6 +886,8 @@ def build_cache_from_plps(cache: Dict) -> int:
         browser.close()
     
     # Guardar cache final
+    if "by_sku" not in cache:
+        cache["by_sku"] = {}
     save_json(CACHE_FILE, cache)
     
     print(f"\n✅ Cache construido: {len(cache['by_sku'])} productos totales")

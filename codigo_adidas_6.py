@@ -242,6 +242,58 @@ def find_nike_stylecolor(nike_franchise: str, df_sb: pd.DataFrame) -> Tuple[Opti
     return None, None
 
 
+def find_nike_botin_by_gama(nike_gama: str, df_sb: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Matching de botines Nike por GAMA (SILO BOTINES).
+    Requiere:
+      - Categoria contiene FOOTBALL/SOCCER
+      - SILO BOTINES coincida con la gama buscada
+      - Excluye Marketing Name con 'PROMINA'
+      - Precio > 0
+    """
+    gama = str(nike_gama or "").strip().upper()
+    if not gama:
+        return None, None
+    
+    # Filtra por categoria futbol + SILO BOTINES + precio
+    df_botines = df_sb[
+        (df_sb["Category"].astype(str).str.contains("FOOTBALL|SOCCER", case=False, na=False)) &
+        (df_sb["_price"] > 0)
+    ].copy()
+    
+    if df_botines.empty:
+        return None, None
+    
+    # Normalizar SILO BOTINES si existe, sino asignar vacío
+    if "SILO BOTINES" not in df_botines.columns:
+        if "SILO BOTIN" in df_botines.columns:
+            df_botines["_silo"] = df_botines["SILO BOTIN"].astype(str).str.strip().str.upper()
+        else:
+            df_botines["_silo"] = ""
+    else:
+        df_botines["_silo"] = df_botines["SILO BOTINES"].astype(str).str.strip().str.upper()
+    
+    # Filtra por GAMA exacta
+    df_botines = df_botines[df_botines["_silo"] == gama].copy()
+    
+    if df_botines.empty:
+        return None, None
+    
+    # Excluye PROMINA en marketing name
+    df_botines = df_botines[
+        ~df_botines["Marketing Name"].astype(str).str.contains("PROMINA", case=False, na=False)
+    ].copy()
+    
+    if df_botines.empty:
+        return None, None
+    
+    # Retorna el primero encontrado
+    row = df_botines.iloc[0]
+    sc = str(row.get("Product Code", "")).strip().upper()
+    mn = str(row.get("Marketing Name", "")).strip()
+    return (sc, mn) if sc else (None, None)
+
+
 def score_product(name: str, franchise: str) -> float:
     if is_blocked_name(name):
         return -999.0
@@ -975,7 +1027,14 @@ def build_rows(
         us_name   = us_p.get("name", "")   if us_p else ""
 
         # Nike del StatusBooks
-        stylecolor, mk_name = find_nike_stylecolor(nike_fr, df_sb)
+        # Para botines: matching por GAMA (SILO BOTINES)
+        # Para otros productos: matching por franquicia
+        is_botin = categoria.upper() in ("FUTBOL", "FOOTBALL", "BOTINES")
+        if is_botin:
+            stylecolor, mk_name = find_nike_botin_by_gama(nike_fr, df_sb)
+        else:
+            stylecolor, mk_name = find_nike_stylecolor(nike_fr, df_sb)
+        
         nike_price: Optional[float] = None
         if stylecolor:
             m = df_sb[df_sb["Product Code"].str.upper() == stylecolor.upper()]
