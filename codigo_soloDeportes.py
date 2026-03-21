@@ -455,69 +455,50 @@ def find_sku_by_url(cache: Dict, url: str) -> Optional[str]:
 # =========================
 def ask_stylecolor_from_sku_safe(client: Optional[OpenAI], sku_solodeportes: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Consulta OpenAI para convertir SKU de SoloDeportes a StyleColor de Nike.
-    Recibe: SKU de SoloDeportes (texto)
+    Extrae el StyleColor Nike directamente del SKU de SoloDeportes sin usar OpenAI.
+    El SKU tiene estructura: PREFIJO(6 dígitos) + STYLE(2 letras + 4 dígitos) + COLOR(3 dígitos)
+    Ejemplo: 510010FQ8146002 → FQ8146-002
     Devuelve: (stylecolor_nike, error_message)
     """
-    if not client:
-        return None, "OpenAI client not initialized"
-    
     if not sku_solodeportes or not sku_solodeportes.strip():
         return None, "SKU vacío"
-    
-    prompt = (
-        "Eres un especialista en productos Nike. Necesito que conviertas un SKU de e-commerce "
-        "al StyleColor oficial de Nike.\n\n"
-        f"SKU de SoloDeportes: '{sku_solodeportes}'\n\n"
-        "INSTRUCCIONES:\n"
-        "1. Analiza este SKU y determina cuál sería el StyleColor de Nike correspondiente\n"
-        "2. Los StyleColor de Nike típicamente tienen formatos como: FQ8119-010, DD1391-100, CU3001-001\n"
-        "3. A veces el SKU del retailer ya es el mismo StyleColor\n"
-        "4. A veces hay que transformarlo (ej: 'NIKE FQ8119-010' → 'FQ8119-010')\n"
-        "5. Si el SKU contiene claramente un código Nike, extraelo\n"
-        "6. Si NO puedes determinar con certeza, responde VACÍO\n"
-        "7. Respuesta FINAL debe ser SOLO el StyleColor en MAYÚSCULAS\n\n"
-        "EJEMPLOS:\n"
-        "- Input: 'NIKE-AB1234-001' → Output: 'AB1234-001'\n"
-        "- Input: 'ZAPATILLA NIKE AIR MAX FQ8119-010' → Output: 'FQ8119-010'\n"
-        "- Input: '123456' → Output: '' (vacío, no se puede determinar)\n\n"
-        "RESPONDE SOLO CON EL STYLECOLOR EN MAYÚSCULAS O VACÍO SI NO SABES."
-    )
-    
+
+    sku = sku_solodeportes.strip().upper()
+
+    # Patrón principal: 6 dígitos + 2 letras + 4 dígitos + 3 dígitos
+    m = re.match(r"^\d{6}([A-Z]{2}\d{4})(\d{3})$", sku)
+    if m:
+        stylecolor = f"{m.group(1)}-{m.group(2)}"
+        print(f"      ✅ StyleColor extraído del SKU: {stylecolor}")
+        return stylecolor, None
+
+    # Patrón alternativo: 6 dígitos + letras+dígitos mezclados + 3 dígitos al final
+    m = re.match(r"^\d{6}([A-Z]{2}\d{3,5}[A-Z0-9]{0,3})(\d{3})$", sku)
+    if m:
+        stylecolor = f"{m.group(1)}-{m.group(2)}"
+        print(f"      ✅ StyleColor extraído (alt): {stylecolor}")
+        return stylecolor, None
+
+    # Patrón para SKUs con letras intermedias: ej 39501332C2UW0KB
+    m = re.match(r"^\d{5,6}([A-Z0-9]{6,8})([A-Z0-9]{3})$", sku)
+    if m:
+        candidate = f"{m.group(1)}-{m.group(2)}"
+        # Validar que tenga al menos 2 letras al inicio
+        if re.match(r"^[A-Z]{2}", m.group(1)):
+            print(f"      ✅ StyleColor extraído (flex): {candidate}")
+            return candidate, None
+
+    print(f"      ⚠️  No se pudo extraer StyleColor del SKU: {sku}")
+    return None, f"SKU sin patrón Nike reconocible: {sku}"
+
+def _ask_stylecolor_from_sku_safe_UNUSED(client, sku_solodeportes):
+    """OBSOLETO — reemplazado por extracción directa de SKU"""
+    # Mantenido solo como referencia, no se usa
     try:
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=30,
-            temperature=0.1,
-            timeout=OPENAI_TIMEOUT_S
-        )
-        
-        txt = (response.choices[0].message.content or "").strip().upper()
-        
-        print(f"      🤖 OpenAI raw response: '{txt}'")
-        
-        # Limpiar y validar
-        txt = txt.replace(" ", "").replace("\n", "").strip()
-        
-        # Si está vacío o indica desconocimiento
-        if not txt or "NO" in txt or "VACÍO" in txt or "N/A" in txt:
-            return None, "OpenAI no pudo determinar el StyleColor"
-        
-        # Validar formato de StyleColor Nike (ej: FQ8119-010, DD1391100)
-        # Formato común: 6-8 letras/números + opcional guión + 3 números
-        if re.match(r"^[A-Z0-9]{6,9}(-[0-9]{3})?$", txt):
-            # Si no tiene guión pero tiene 9+ caracteres, agregar guión antes de últimos 3
-            if "-" not in txt and len(txt) >= 9:
-                txt = f"{txt[:-3]}-{txt[-3:]}"
-            return txt, None
-        
-        return None, f"Formato no válido de StyleColor: '{txt}'"
-        
+        pass
     except Exception as e:
         error_msg = str(e)
         print(f"      🔍 Error OpenAI: {error_msg}")
-        
         if "401" in error_msg or "authentication" in error_msg.lower():
             return None, "API key inválida o expirada"
         elif "429" in error_msg:

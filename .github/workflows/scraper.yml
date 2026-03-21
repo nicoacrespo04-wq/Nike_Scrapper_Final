@@ -404,8 +404,8 @@ jobs:
         with:
           name: outputs-uru
           path: |
-            Nike_US_UY_*.xlsx
-            Nike_US_UY_*.csv
+            Nike_URU_*.xlsx
+            Nike_URU_*.csv
           retention-days: 30
 
   # ─────────────────────────────────────────
