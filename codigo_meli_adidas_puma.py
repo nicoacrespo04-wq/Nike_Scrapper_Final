@@ -54,6 +54,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DEFAULT_EXCEL_PATH = "Comparativa_Nike_Adidas.xlsx"
 
+# Activar/desactivar scraping de Puma (False = solo Nike + Adidas)
+SCRAP_PUMA = False
+
 # Proxy SmartProxy
 PROXY_HOST = "proxy.smartproxy.net"
 PROXY_PORT = 3120
@@ -69,6 +72,9 @@ SCROLL_WAIT   = 1.5
 MAX_PAGINAS                  = 2
 MAX_PRODUCTOS_POR_FRANQUICIA = 100
 MAX_PDP_RETRIES              = 2
+
+# Tope de markdown aceptado para evitar falsos full_price inflados
+MAX_MARKDOWN_PCT = 0.60
 
 # Workers
 PLP_WORKERS = 3
@@ -289,7 +295,8 @@ def extract_prices(page) -> Tuple[Optional[float], Optional[float], Optional[str
             pass
 
     # ── Full price: buscar precio tachado (precio original sin descuento) ────
-    # Selectores en orden de prioridad para el precio tachado
+    # Se recolectan candidatos y se elige el MENOR >= final para evitar
+    # falsos positivos inflados (ej: valores cruzados de otros bloques).
     original_selectors = [
         "span.ui-pdp-price__original-value .andes-money-amount__fraction",
         ".ui-pdp-price__original-value .andes-money-amount__fraction",
@@ -298,23 +305,45 @@ def extract_prices(page) -> Tuple[Optional[float], Optional[float], Optional[str
         "[class*='original'] .andes-money-amount__fraction",
         "[class*='strike'] .andes-money-amount__fraction",
     ]
+
+    candidatos_full: List[Tuple[float, str, str]] = []
     for sel in original_selectors:
         try:
-            loc = page.locator(sel).first
-            if loc.count() > 0:
-                full_raw   = loc.inner_text()
-                full_price = money_str_to_float(full_raw)
-                if full_price and full_price > 0:
-                    log_info(f"    Full price (tachado [{sel}]): ${full_price:,.0f}")
-                    break
+            loc = page.locator(sel)
+            n = min(loc.count(), 5)
+            for i in range(n):
+                txt = loc.nth(i).inner_text()
+                val = money_str_to_float(txt)
+                if val and val > 0:
+                    candidatos_full.append((val, txt, sel))
         except Exception:
             continue
+
+    if candidatos_full:
+        if final_price and final_price > 0:
+            validos = [c for c in candidatos_full if c[0] >= final_price]
+            elegido = min(validos, key=lambda x: x[0]) if validos else min(candidatos_full, key=lambda x: x[0])
+        else:
+            elegido = min(candidatos_full, key=lambda x: x[0])
+        full_price, full_raw, sel_usado = elegido
+        log_info(f"    Full price (tachado [{sel_usado}]): ${full_price:,.0f}")
 
     # Si no hay precio tachado → full price = final price (sin descuento)
     if not full_price and final_price:
         full_price = final_price
         full_raw   = final_raw
         log_info(f"    Full price = Final price (sin descuento): ${full_price:,.0f}")
+
+    # Sanity extra: evita falsos descuentos extremos por lectura errónea
+    if full_price and final_price and full_price > 0:
+        markdown_pct = (full_price - final_price) / full_price
+        if markdown_pct < 0 or markdown_pct > MAX_MARKDOWN_PCT:
+            log_warning(
+                f"    ⚠️  markdown sospechoso ({markdown_pct:.1%}) "
+                f"full=${full_price:,.0f} final=${final_price:,.0f} — usando full=final"
+            )
+            full_price = final_price
+            full_raw = final_raw
 
     return full_price, final_price, full_raw, final_raw
 
@@ -1191,7 +1220,7 @@ def _scroll_hasta_cargar_todo(page, selector: str, max_intentos: int = 15) -> No
         log_info(f"    Scroll {intento+1}: {count} items cargados")
         if count == prev_count:
             sin_cambio += 1
-            if sin_cambio >= 2:   # 2 pasadas sin cambio = llegamos al final
+            if sin_cambio >= 3:   # 3 pasadas sin cambio = llegamos al final
                 break
         else:
             sin_cambio = 0
@@ -1217,17 +1246,34 @@ def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> Lis
     mlas_vistos:  set = set()
     desc_franq    = 0
     desc_salomon  = 0
+    desc_trail    = 0
+    desc_cross    = 0
 
-    MARCAS_EXCLUIR = ["salomon", "salom"]
+    MARCAS_EXCLUIR   = ["salomon", "salom"]
+    cat_upper        = categoria.strip().upper()
+    cat_lower        = categoria.strip().lower()
+    # ¿La franquicia misma dice "trail"? Si es así, no filtramos trail.
+    franq_es_trail   = "trail" in franquicia.lower()
+    # Palabras de accesorio a excluir en categorías de calzado
+    PALABRAS_ACCESORIOS = ["mochila", "bolso", "bolsa", "gorra", "remera",
+                           "campera", "pantalon", "medias", "calcetines",
+                           "guante", "chaleco", "riñonera"]
 
-    # Construir URL directa de listado
+    # Construir URL principal (pág 1) y páginas adicionales
     nombre_limpio = parsear_franquicia(franquicia)["nombre_limpio"]
-    prefijo       = _prefijo_categoria(categoria)
-    if prefijo:
-        slug = f"{prefijo}-{nombre_limpio}-{marca}".replace(" ", "-").lower()
-    else:
-        slug = f"{nombre_limpio}-{marca}".replace(" ", "-").lower()
-    plp_url = f"https://listado.mercadolibre.com.ar/{slug}"
+
+    # Páginas 1..MAX_PAGINAS de la query principal
+    urls_paginadas = [build_search_url(marca, categoria, franquicia, pg)
+                      for pg in range(1, MAX_PAGINAS + 1)]
+    # Fallback sin prefijo (ayuda a Club, Revolution, etc.)
+    slug_simple    = f"{nombre_limpio}-{marca}".replace(" ", "-").lower()
+    url_fallback   = f"https://listado.mercadolibre.com.ar/{slug_simple}"
+    urls_extra     = []
+    if url_fallback not in urls_paginadas:
+        urls_extra.append(url_fallback)
+    for extra in build_search_urls_extra(marca, categoria, franquicia):
+        if extra not in urls_paginadas and extra not in urls_extra:
+            urls_extra.append(extra)
 
     with sync_playwright() as p:
         session_id = f"plp_{marca}_{franquicia}_{uuid.uuid4().hex[:8]}"
@@ -1247,110 +1293,152 @@ def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> Lis
         page.set_default_timeout(NAV_TIMEOUT)
 
         try:
-            log_scraping(f"  🔗 URL directa: {plp_url}")
-            resp = page.goto(plp_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-            if resp and resp.status >= 400:
-                log_warning(f"  ⚠️  Status {resp.status} — abortando {marca}/{franquicia}")
-                return resultados
-            time.sleep(1.5)
+            reglas_franq   = parsear_franquicia(franquicia)
+            def _procesar_url(url_intento: str, idx_url: int, total_urls: int) -> int:
+                """Procesa una URL de PLP y agrega resultados. Devuelve cuántos agregó."""
+                nonlocal desc_franq, desc_salomon, desc_trail, desc_cross
+                if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
+                    return 0
 
-            # Scroll incremental para forzar el lazy loading de todos los items
-            item_selector = "li.ui-search-layout__item"
-            _scroll_hasta_cargar_todo(page, item_selector)
+                log_scraping(f"  🔗 URL ({idx_url}/{total_urls}): {url_intento}")
+                resp = page.goto(url_intento, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+                if resp and resp.status >= 400:
+                    log_warning(f"  ⚠️  Status {resp.status} en intento {idx_url}")
+                    return 0
+                time.sleep(1.2)
 
-            items = page.locator(item_selector).all()
-            if not items:
-                # Fallback selector
-                item_selector = ".ui-search-result"
+                item_selector = "li.ui-search-layout__item"
                 _scroll_hasta_cargar_todo(page, item_selector)
                 items = page.locator(item_selector).all()
+                if not items:
+                    item_selector = ".ui-search-result"
+                    _scroll_hasta_cargar_todo(page, item_selector)
+                    items = page.locator(item_selector).all()
 
-            log_info(f"    {len(items)} items totales tras scroll completo")
+                log_info(f"    {len(items)} items totales tras scroll completo")
+                nuevos = 0
 
-            reglas_franq = parsear_franquicia(franquicia)
-
-            for item in items:
-                try:
-                    link = item.locator("a").first
-                    if link.count() == 0:
-                        continue
-                    href = link.get_attribute("href")
-                    if not href or "MLA-" not in href:
-                        continue
-
-                    url_prod = href if href.startswith("http") \
-                               else f"https://www.mercadolibre.com.ar{href}"
-                    mla = extract_mla_from_url(url_prod)
-                    if not mla or mla in mlas_vistos:
-                        continue
-
-                    url_lower = url_prod.lower()
-
-                    # ── Filtro: excluir Salomon y otras marcas ajenas ──────
-                    if any(m in url_lower for m in MARCAS_EXCLUIR):
-                        desc_salomon += 1
-                        log_info(f"      ✗ Salomon/marca ajena descartado: {mla}")
-                        continue
-
-                    titulo = extract_title_from_url(url_prod)
-
-                    # ── Filtro FUTBOL: excluir zapatillas ─────────────────
-                    # En búsquedas de botines a veces aparecen zapatillas con
-                    # el mismo nombre (ej: "Adidas Club"). Si la categoría es
-                    # FUTBOL y el título contiene "zapatillas" → descartar.
-                    if categoria.strip().upper() == "FUTBOL":
-                        titulo_check = titulo.lower()
-                        try:
-                            titulo_visible_check = item.locator(
-                                "h2, .poly-component__title, .ui-search-item__title"
-                            ).first.inner_text().strip().lower()
-                        except Exception:
-                            titulo_visible_check = ""
-                        if "zapatilla" in titulo_check or "zapatilla" in titulo_visible_check:
-                            log_info(f"      ✗ Zapatilla descartada en FUTBOL: {mla}")
+                for item in items:
+                    try:
+                        link = item.locator("a").first
+                        if link.count() == 0:
+                            continue
+                        href = link.get_attribute("href")
+                        if not href or "MLA-" not in href:
                             continue
 
-                    # ── Filtro: franquicia en título ───────────────────────
-                    # Fallback Revolution/nombres cortos: si el slug de URL no contiene
-                    # la franquicia, intentar leer el texto visible del item en la PLP.
-                    # Meli a veces genera slugs con código de modelo (ej: hm9594-001)
-                    # sin el nombre de la línea, pero el h2/título visible sí lo tiene.
-                    if not match_franquicia(titulo, reglas_franq):
+                        url_prod = href if href.startswith("http") \
+                                   else f"https://www.mercadolibre.com.ar{href}"
+                        mla = extract_mla_from_url(url_prod)
+                        if not mla or mla in mlas_vistos:
+                            continue
+
+                        url_lower = url_prod.lower()
+
+                        # ── Filtro: excluir Salomon y otras marcas ajenas ──────
+                        if any(m in url_lower for m in MARCAS_EXCLUIR):
+                            desc_salomon += 1
+                            log_info(f"      ✗ Salomon/marca ajena descartado: {mla}")
+                            continue
+
+                        titulo = extract_title_from_url(url_prod)
                         try:
                             titulo_visible = item.locator(
-                                "h2, .poly-component__title, "
-                                ".ui-search-item__title, [class*='title']"
+                                "h2, .poly-component__title, .ui-search-item__title, [class*='title']"
                             ).first.inner_text().strip().lower()
+                        except Exception:
+                            titulo_visible = ""
+
+                        titulo_check = (titulo_visible or titulo).lower()
+
+                        # ── Filtro trail: excluir "trail" si franquicia no lo es ─
+                        if not franq_es_trail and "trail" in titulo_check:
+                            desc_trail += 1
+                            log_info(f"      ✗ Trail descartado: {mla}")
+                            continue
+
+                        # ── Filtro FUTBOL: excluir zapatillas ─────────────────
+                        if cat_upper == "FUTBOL":
+                            if "zapatilla" in titulo_check:
+                                desc_cross += 1
+                                log_info(f"      ✗ Zapatilla descartada en FUTBOL: {mla}")
+                                continue
+
+                        # ── Filtro Running/Training/Sportswear: excluir botines/fútbol ─
+                        if cat_lower in ("running", "training", "sportswear"):
+                            if any(w in titulo_check for w in ("botin", "fútbol", "futbol", "soccer")):
+                                desc_cross += 1
+                                log_info(f"      ✗ Botín/fútbol descartado en {categoria}: {mla}")
+                                continue
+
+                        # ── Filtro accesorios: excluir no-calzado en categorías calzado ─
+                        if cat_lower in ("running", "training", "sportswear", "futbol"):
+                            if any(w in titulo_check for w in PALABRAS_ACCESORIOS):
+                                desc_cross += 1
+                                log_info(f"      ✗ Accesorio descartado en {categoria}: {mla}")
+                                continue
+
+                        # ── Filtro: franquicia en título ───────────────────────
+                        if not match_franquicia(titulo, reglas_franq):
                             if titulo_visible and match_franquicia(titulo_visible, reglas_franq):
                                 log_info(f"      ↩ Fallback título visible: '{titulo_visible[:50]}'")
-                                titulo = titulo_visible  # usar el visible para seguir
+                                titulo = titulo_visible
                             else:
                                 desc_franq += 1
                                 continue
-                        except Exception:
-                            desc_franq += 1
-                            continue
 
-                    mlas_vistos.add(mla)
-                    resultados.append({
-                        "mla": mla, "url": url_prod,
-                        "marca": marca, "categoria": categoria,
-                        "franquicia": franquicia,
-                    })
-                    if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
-                        break
+                        mlas_vistos.add(mla)
+                        resultados.append({
+                            "mla": mla,
+                            "url": url_prod,
+                            "marca": marca,
+                            "categoria": categoria,
+                            "franquicia": franquicia,
+                            "product_name_plp": titulo_visible or titulo,
+                        })
+                        nuevos += 1
+                        if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
+                            break
 
-                except Exception:
-                    continue
+                    except Exception:
+                        continue
+
+                return nuevos
+
+            # ── Páginas 1..MAX_PAGINAS de la query principal ──────────────────
+            total_urls_main = len(urls_paginadas)
+            for idx, url in enumerate(urls_paginadas, start=1):
+                if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
+                    break
+                antes = len(resultados)
+                _procesar_url(url, idx, total_urls_main + len(urls_extra))
+                nuevos_en_pag = len(resultados) - antes
+                # Si la pág 1 trajo 0 resultados, no tiene sentido paginar más
+                if idx == 1 and nuevos_en_pag == 0:
+                    log_warning(f"  ⚠️  Pág 1 sin resultados — saltando paginación")
+                    break
+                # Si la página siguiente no trae nada nuevo, parar paginación
+                if idx > 1 and nuevos_en_pag == 0:
+                    log_info(f"  Página {idx} sin nuevos items — fin paginación")
+                    break
+
+            # ── Fallback URLs (Club, Revolution, zoom, air, etc.) ─────────────
+            offset_extra = total_urls_main
+            for idx, url in enumerate(urls_extra, start=offset_extra + 1):
+                if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
+                    break
+                _procesar_url(url, idx, total_urls_main + len(urls_extra))
 
         except Exception as e:
             log_error(f"  Error en PLP tienda oficial: {e}")
         finally:
             browser.close()
 
-    log_success(f"  ✅ {len(resultados)} productos — descartados: "
-                f"{desc_franq} por franquicia, {desc_salomon} Salomon/marca ajena"
-                + (" [filtro zapatillas activo en FUTBOL]" if categoria.strip().upper() == "FUTBOL" else ""))
+    log_success(
+        f"  ✅ {len(resultados)} productos — descartados: "
+        f"{desc_franq} franquicia, {desc_salomon} marcas ajenas, "
+        f"{desc_trail} trail, {desc_cross} cross-cat/accesorios"
+    )
     return resultados
 
 
@@ -1561,6 +1649,9 @@ def scrape_pdp(producto: Dict[str, str]) -> Optional[Dict[str, Any]]:
                 "marca":        producto["marca"],
                 "categoria":    producto["categoria"],
                 "franquicia":   producto["franquicia"],
+                "product_name": (page.locator("h1.ui-pdp-title, h1").first.inner_text().strip()
+                                  if page.locator("h1.ui-pdp-title, h1").first.count() > 0
+                                  else str(producto.get("product_name_plp", "")).strip()),
                 "full_price":   full_price,
                 "final_price":  final_price,
                 "full_raw":     full_raw,
@@ -1779,6 +1870,7 @@ def generar_output(resultados: List[Dict[str, Any]]) -> Tuple[pd.DataFrame, pd.D
             "Talles":     r["talles"] if r["talles"] is not None else "",
             "URL":        r["url"],
             "Fecha":      r["fecha"],
+            "Nombre Producto": r.get("product_name", ""),
         })
 
     df_crudo = pd.DataFrame(rows_crudo)
@@ -1922,6 +2014,12 @@ def main():
     if not franquicias:
         log_error("No se encontraron franquicias en el Excel.")
         return
+
+    if not SCRAP_PUMA:
+        antes = len(franquicias)
+        franquicias = [f for f in franquicias if f.get("marca", "").strip().lower() != "puma"]
+        excluidas = antes - len(franquicias)
+        log_info(f"🐆 SCRAP_PUMA=False → {excluidas} franquicias Puma excluidas")
 
     # Filtro de categoría
     if CATEGORIA_FILTRO:

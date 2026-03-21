@@ -453,49 +453,88 @@ def find_sku_by_url(cache: Dict, url: str) -> Optional[str]:
 # =========================
 # OpenAI Functions - ¡MODIFICADO! (SKU como texto)
 # =========================
-def ask_stylecolor_from_sku_safe(client: Optional[OpenAI], sku_solodeportes: str) -> Tuple[Optional[str], Optional[str]]:
+def _extract_stylecolor_from_sku_regex(sku: str) -> Optional[str]:
     """
-    Extrae el StyleColor Nike directamente del SKU de SoloDeportes sin usar OpenAI.
+    Intenta extraer StyleColor Nike directamente del SKU de SoloDeportes sin API.
     El SKU tiene estructura: PREFIJO(6 dígitos) + STYLE(2 letras + 4 dígitos) + COLOR(3 dígitos)
     Ejemplo: 510010FQ8146002 → FQ8146-002
+    """
+    sku = sku.strip().upper()
+
+    # Patrón principal: 6 dígitos + 2 letras + 4 dígitos + 3 dígitos
+    m = re.match(r"^\d{6}([A-Z]{2}\d{4})(\d{3})$", sku)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+
+    # Patrón alternativo: 6 dígitos + letras+dígitos + 3 dígitos al final
+    m = re.match(r"^\d{6}([A-Z]{2}[\dA-Z]{4,6})(\d{3})$", sku)
+    if m and re.match(r"^[A-Z]{2}", m.group(1)):
+        return f"{m.group(1)}-{m.group(2)}"
+
+    return None
+
+
+def ask_stylecolor_from_sku_safe(client: Optional[OpenAI], sku_solodeportes: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Convierte SKU de SoloDeportes a StyleColor Nike.
+    Estrategia: primero intenta extracción por regex (gratis), 
+    si falla usa OpenAI como fallback (solo para SKUs con formato no estándar).
     Devuelve: (stylecolor_nike, error_message)
     """
     if not sku_solodeportes or not sku_solodeportes.strip():
         return None, "SKU vacío"
 
-    sku = sku_solodeportes.strip().upper()
-
-    # Patrón principal: 6 dígitos + 2 letras + 4 dígitos + 3 dígitos
-    m = re.match(r"^\d{6}([A-Z]{2}\d{4})(\d{3})$", sku)
-    if m:
-        stylecolor = f"{m.group(1)}-{m.group(2)}"
-        print(f"      ✅ StyleColor extraído del SKU: {stylecolor}")
+    # 1️⃣ Intentar extracción directa por regex (sin costo)
+    stylecolor = _extract_stylecolor_from_sku_regex(sku_solodeportes)
+    if stylecolor:
+        print(f"      ✅ StyleColor extraído por regex: {stylecolor}")
         return stylecolor, None
 
-    # Patrón alternativo: 6 dígitos + letras+dígitos mezclados + 3 dígitos al final
-    m = re.match(r"^\d{6}([A-Z]{2}\d{3,5}[A-Z0-9]{0,3})(\d{3})$", sku)
-    if m:
-        stylecolor = f"{m.group(1)}-{m.group(2)}"
-        print(f"      ✅ StyleColor extraído (alt): {stylecolor}")
-        return stylecolor, None
+    # 2️⃣ Fallback: OpenAI para SKUs con formato no estándar
+    if not client:
+        return None, "Regex no matcheó y OpenAI no está inicializado"
 
-    # Patrón para SKUs con letras intermedias: ej 39501332C2UW0KB
-    m = re.match(r"^\d{5,6}([A-Z0-9]{6,8})([A-Z0-9]{3})$", sku)
-    if m:
-        candidate = f"{m.group(1)}-{m.group(2)}"
-        # Validar que tenga al menos 2 letras al inicio
-        if re.match(r"^[A-Z]{2}", m.group(1)):
-            print(f"      ✅ StyleColor extraído (flex): {candidate}")
-            return candidate, None
+    print(f"      🤖 Regex falló, consultando OpenAI para SKU: {sku_solodeportes}")
 
-    print(f"      ⚠️  No se pudo extraer StyleColor del SKU: {sku}")
-    return None, f"SKU sin patrón Nike reconocible: {sku}"
+    prompt = (
+        "Eres un especialista en productos Nike. Necesito que conviertas un SKU de e-commerce "
+        "al StyleColor oficial de Nike.\n\n"
+        f"SKU de SoloDeportes: '{sku_solodeportes}'\n\n"
+        "INSTRUCCIONES:\n"
+        "1. Los StyleColor de Nike tienen formatos como: FQ8119-010, DD1391-100, CU3001-001\n"
+        "2. El SKU del retailer a veces contiene el StyleColor embebido\n"
+        "3. Extraé solo el StyleColor Nike en formato XXXXXX-000\n"
+        "4. Si NO podés determinarlo con certeza, respondé VACÍO\n\n"
+        "EJEMPLOS:\n"
+        "- '39501332C2UW0KB' → probablemente no es Nike → VACÍO\n"
+        "- '510010FQ8119010' → FQ8119-010\n\n"
+        "RESPONDE SOLO CON EL STYLECOLOR EN MAYÚSCULAS O VACÍO."
+    )
 
-def _ask_stylecolor_from_sku_safe_UNUSED(client, sku_solodeportes):
-    """OBSOLETO — reemplazado por extracción directa de SKU"""
-    # Mantenido solo como referencia, no se usa
     try:
-        pass
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=30,
+            temperature=0.1,
+            timeout=OPENAI_TIMEOUT_S
+        )
+
+        txt = (response.choices[0].message.content or "").strip().upper()
+        print(f"      🤖 OpenAI raw response: '{txt}'")
+        txt = txt.replace(" ", "").replace("\n", "").strip()
+
+        if not txt or "VACÍO" in txt or "NO" in txt or "N/A" in txt:
+            return None, "OpenAI no pudo determinar el StyleColor"
+
+        # Validar formato StyleColor Nike
+        if re.match(r"^[A-Z0-9]{6,9}(-[0-9]{3})?$", txt):
+            if "-" not in txt and len(txt) >= 9:
+                txt = f"{txt[:-3]}-{txt[-3:]}"
+            return txt, None
+
+        return None, f"Formato no válido: '{txt}'"
+
     except Exception as e:
         error_msg = str(e)
         print(f"      🔍 Error OpenAI: {error_msg}")
