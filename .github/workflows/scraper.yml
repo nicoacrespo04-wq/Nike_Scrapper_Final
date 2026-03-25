@@ -2,8 +2,8 @@ name: Weekly Scrapers
 
 on:
   schedule:
-    # Todos los lunes a las 12:00 UTC = 09:00 AM Argentina
-    - cron: '0 12 * * 1'
+    # Todos los lunes a las 20:00 UTC = 17:00 Argentina
+    - cron: '0 20 * * 1'
   workflow_dispatch:  # Permite correrlo manualmente desde GitHub
 
 jobs:
