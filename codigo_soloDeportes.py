@@ -46,7 +46,9 @@ MAX_PARALLEL_WORKERS = 4  # Workers paralelos para PDPs
 MAX_DAYS_ACTIVE = 30  # Procesar productos actualizados en últimos X días
 MAX_RETRIES = 1  # Reintentos antes de marcar como inactivo
 
-HEADLESS = os.getenv("HEADLESS", "false").lower() in ("1", "true", "yes", "y")
+_headless_env = os.getenv("HEADLESS", "false").strip().lower()
+HEADLESS = _headless_env in ("1", "true", "yes", "y")
+print(f"[CONFIG] HEADLESS={HEADLESS} (env='{_headless_env}')")
 
 CACHE_FILE = os.getenv("SOLO_CACHE_FILE", "solodeportes_cache.json")
 
@@ -842,31 +844,32 @@ def build_cache_from_plps(cache: Dict) -> int:
     plp_urls = read_links_excel(LINKS_FILE, LINKS_SHEET)
     print(f"📊 PLPs a procesar: {len(plp_urls)}")
     
-    # Inicializar OpenAI (pero continuar incluso si falla)
+    # Inicializar OpenAI (siempre continuar aunque falle)
     client = None
     openai_error = None
-    
-    try:
-        if OPENAI_API_KEY and "sk-" in OPENAI_API_KEY:
-            client = OpenAI(api_key=OPENAI_API_KEY)
-            print("   🤖 OpenAI inicializado (usando chat.completions)")
-            
-            # Prueba rápida de conexión
+
+    _key = (OPENAI_API_KEY or "").strip()
+    if not _key or _key in ("REMOVED_OPENAI_KEY", "") or not _key.startswith("sk-"):
+        print("   ⚠️  OPENAI_API_KEY no configurada — solo se usará regex para StyleColor")
+    else:
+        try:
+            client = OpenAI(api_key=_key)
+            print("   🤖 OpenAI inicializado")
             try:
-                test_response = client.chat.completions.create(
+                client.chat.completions.create(
                     model=OPENAI_MODEL,
-                    messages=[{"role": "user", "content": "Test"}],
-                    max_tokens=5
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=3
                 )
                 print("   ✅ Conexión OpenAI verificada")
             except Exception as test_error:
-                print(f"   ⚠️  Advertencia en test OpenAI: {test_error}")
-        else:
-            print("   ⚠️  API key de OpenAI no válida o faltante")
-    except Exception as e:
-        openai_error = str(e)
-        print(f"   ❌ Error inicializando OpenAI: {openai_error}")
-        print("   ⚠️  Continuando sin OpenAI (solo extraeremos URLs)")
+                print(f"   ⚠️  Test OpenAI falló (no crítico): {test_error}")
+                # No resetear client — igual puede funcionar en llamadas reales
+        except Exception as e:
+            openai_error = str(e)
+            client = None
+            print(f"   ❌ No se pudo inicializar OpenAI: {openai_error}")
+            print("   ⚠️  Continuando sin OpenAI")
     
     total_new = 0
     
@@ -1439,8 +1442,8 @@ def main():
         print("      • Productos sin StyleColor en cache")
         print("      • StyleColor no encontrado en StatusBooks")
         print("      • PDPs inactivas o con errores")
-        
-        return
+        print("   ✅ Script finalizado sin errores (output vacío es válido)")
+        return  # salida limpia, exit code 0
     
     ts = now_ts()
     csv_path = f"solodeportes_vs_nike_{ts}.csv"
