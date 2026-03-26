@@ -70,7 +70,7 @@ SCROLL_WAIT   = 1.5
 
 # Límites
 MAX_PAGINAS                  = 2
-MAX_PRODUCTOS_POR_FRANQUICIA = 100
+MAX_PRODUCTOS_POR_FRANQUICIA = 0  # 0 = sin límite
 MAX_PDP_RETRIES              = 2
 
 # Tope de markdown aceptado para evitar falsos full_price inflados
@@ -1297,7 +1297,7 @@ def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> Lis
             def _procesar_url(url_intento: str, idx_url: int, total_urls: int) -> int:
                 """Procesa una URL de PLP y agrega resultados. Devuelve cuántos agregó."""
                 nonlocal desc_franq, desc_salomon, desc_trail, desc_cross
-                if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
+                if MAX_PRODUCTOS_POR_FRANQUICIA > 0 and len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
                     return 0
 
                 log_scraping(f"  🔗 URL ({idx_url}/{total_urls}): {url_intento}")
@@ -1397,7 +1397,7 @@ def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> Lis
                             "product_name_plp": titulo_visible or titulo,
                         })
                         nuevos += 1
-                        if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
+                        if MAX_PRODUCTOS_POR_FRANQUICIA > 0 and len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
                             break
 
                     except Exception:
@@ -1408,7 +1408,7 @@ def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> Lis
             # ── Páginas 1..MAX_PAGINAS de la query principal ──────────────────
             total_urls_main = len(urls_paginadas)
             for idx, url in enumerate(urls_paginadas, start=1):
-                if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
+                if MAX_PRODUCTOS_POR_FRANQUICIA > 0 and len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
                     break
                 antes = len(resultados)
                 _procesar_url(url, idx, total_urls_main + len(urls_extra))
@@ -1425,7 +1425,7 @@ def scrape_plp_for_franchise(marca: str, categoria: str, franquicia: str) -> Lis
             # ── Fallback URLs (Club, Revolution, zoom, air, etc.) ─────────────
             offset_extra = total_urls_main
             for idx, url in enumerate(urls_extra, start=offset_extra + 1):
-                if len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
+                if MAX_PRODUCTOS_POR_FRANQUICIA > 0 and len(resultados) >= MAX_PRODUCTOS_POR_FRANQUICIA:
                     break
                 _procesar_url(url, idx, total_urls_main + len(urls_extra))
 

@@ -43,8 +43,8 @@ STATUSBOOKS_SHEET = "Books NDDC"
 HEADLESS = True
 AGENTS = max(2, int(os.getenv("AGENTS", "2")))
 
-# 0 = sin limite; 40 para debug rapido
-DEBUG_LIMIT = int(os.getenv("DEBUG_LIMIT", "0"))
+# Sin limite de productos
+DEBUG_LIMIT = 0
 
 MAX_PLP_SCROLL_ROUNDS = 25
 PLP_STAGNATION_ROUNDS = 4
@@ -1462,10 +1462,6 @@ def main():
     log("\n🧾 Stage 2: scraping PDPs + update JSON ...")
 
     styles_ordered = list(all_styles)
-    if DEBUG_LIMIT and DEBUG_LIMIT > 0:
-        styles_ordered = styles_ordered[:DEBUG_LIMIT]
-        all_styles = styles_ordered
-        log(f"🧪 DEBUG_LIMIT activo: {len(styles_ordered)} stylecolors")
 
     style_to_idx = {st: i for i, st in enumerate(styles_ordered, start=1)}
     cache_lock = threading.Lock()

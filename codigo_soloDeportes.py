@@ -40,7 +40,7 @@ LINKS_SHEET = os.getenv("LINKS_SHEET", "SoloDeportes")
 STATUSBOOKS_FILE = os.getenv("STATUSBOOKS_FILE", "StatusBooks NDDC ARG SP26.xlsb")
 
 # Límites
-MAX_PRODUCTS_PER_PLP = 450
+MAX_PRODUCTS_PER_PLP = 0  # 0 = sin límite
 OMIT_FIRST_N = 4  # Omitir primeros 4 productos (más vendidos)
 MAX_PARALLEL_WORKERS = 4  # Workers paralelos para PDPs
 MAX_DAYS_ACTIVE = 30  # Procesar productos actualizados en últimos X días
@@ -718,7 +718,8 @@ def extract_products_from_plp(page, cache: Dict, client: Optional[OpenAI] = None
     browser_connected = True
     
     # Procesar cada producto (omitir primeros N)
-    for i in range(OMIT_FIRST_N, min(total_count, MAX_PRODUCTS_PER_PLP + OMIT_FIRST_N)):
+    max_index = total_count if MAX_PRODUCTS_PER_PLP <= 0 else min(total_count, MAX_PRODUCTS_PER_PLP + OMIT_FIRST_N)
+    for i in range(OMIT_FIRST_N, max_index):
         if not browser_connected:
             print("      ⚠️  Browser desconectado, deteniendo extracción")
             break

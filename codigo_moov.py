@@ -42,8 +42,8 @@ HEADLESS = True
 # --- Performance (multi-agent) ---
 AGENTS = max(2, int(os.getenv('AGENTS', '2')))  # set 1 to disable parallelism
 
-# --- Debug: limitar cantidad de productos a procesar (0 = sin límite) ---
-DEBUG_LIMIT = int(os.getenv('DEBUG_LIMIT', '40'))
+# --- Sin límite de productos ---
+DEBUG_LIMIT = 0
 
 
 MAX_PLP_SCROLL_ROUNDS = 18
@@ -1472,12 +1472,8 @@ def main():
 
     log("\n🧾 Stage 2: scraping PDPs + update JSON (DB) ...")
 
-    # style_to_idx se calcula luego de aplicar DEBUG_LIMIT
+    # style_to_idx se calcula sin límite de productos
     styles_ordered = list(all_styles)
-    if DEBUG_LIMIT and DEBUG_LIMIT > 0:
-        styles_ordered = styles_ordered[:DEBUG_LIMIT]
-        all_styles = styles_ordered
-        log(f"🧪 DEBUG_LIMIT activo: procesando solo {len(styles_ordered)} stylecolors")
 
 
     style_to_idx = {st: i for i, st in enumerate(styles_ordered, start=1)}

@@ -92,7 +92,7 @@ AUX_COL_ANIO     = "Año"
 HEADLESS = True
 AGENTS   = int(os.getenv("AGENTS", "3"))
 
-DEBUG_LIMIT  = int(os.getenv("DEBUG_LIMIT",  "0"))   # 0 = sin límite
+DEBUG_LIMIT  = 0
 DEBUG_OFFSET = int(os.getenv("DEBUG_OFFSET", "0"))   # saltear N productos
 
 # =========================
@@ -1725,7 +1725,6 @@ def main():
     log(f" Workers paralelos: {AGENTS}")
     log("=" * 70)
     log(f" Headless={HEADLESS} | REFRESH_CACHED={REFRESH_CACHED}")
-    if DEBUG_LIMIT  > 0: log(f" DEBUG_LIMIT activo: limitando a {DEBUG_LIMIT} productos")
     if DEBUG_OFFSET > 0: log(f" DEBUG_OFFSET activo: salteando {DEBUG_OFFSET} productos")
     log(f" StatusBooks: {STATUSBOOKS_FILE}")
     log(f" CACHE: {CACHE_PATH}")
@@ -1770,7 +1769,7 @@ def main():
     # porque el stylecolor puede ser null/incompleto desde data-sku
     url_meta = {}   # url → { url, categorias, primary_cat, source_plp, ds_sku, productid }
 
-    target_collect = (DEBUG_LIMIT + DEBUG_OFFSET) if DEBUG_LIMIT > 0 else 0
+    target_collect = 0
 
     with sync_playwright() as pw:
         browser, context, _ = new_browser_context(pw)
@@ -1843,8 +1842,6 @@ def main():
     urls_ordered = list(all_urls)
     if DEBUG_OFFSET > 0:
         urls_ordered = urls_ordered[DEBUG_OFFSET:]
-    if DEBUG_LIMIT > 0:
-        urls_ordered = urls_ordered[:DEBUG_LIMIT]
     total_target = len(urls_ordered)
     url_to_idx   = {u: i for i, u in enumerate(urls_ordered, start=1)}
     log(f" URLs a procesar en Stage 2: {total_target}")
