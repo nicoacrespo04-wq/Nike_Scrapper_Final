@@ -20,7 +20,7 @@ import hashlib
 import datetime as dt
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Set
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# ThreadPoolExecutor eliminado: Playwright no es thread-safe en CI
 import threading
 
 import pandas as pd
@@ -1062,105 +1062,69 @@ def extract_sku_from_pdp(page) -> Optional[str]:
     
     return None
 
-def worker_process_pdps(urls_batch: List[str], worker_id: int) -> List[Dict]:
+def process_pdps_sequential(pdp_urls: List[str]) -> List[Dict]:
     """
-    Worker que procesa un batch de PDPs.
-    Cada worker tiene su propio contexto de Playwright.
+    Procesa PDPs en un único browser secuencial.
+    Reemplaza el ThreadPoolExecutor que no funciona con Playwright en CI.
+    Playwright no es thread-safe: sync_playwright() no puede correrse
+    desde threads secundarios, solo desde el thread principal.
+    Con 230 PDPs a ~3s c/u = ~12 minutos, bien dentro del límite de 6h.
     """
-    worker_results = []
-    
-    print(f"   👷 Worker {worker_id} iniciando ({len(urls_batch)} URLs)")
-    
+    total = len(pdp_urls)
+    print(f"\n🚀 Procesando {total} PDPs (secuencial, 1 browser)...")
+
+    all_results = []
+    success_count = 0
+    start = time.time()
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
         context = browser.new_context(
             viewport={"width": 1366, "height": 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
-        
-        for url_idx, url in enumerate(urls_batch):
+
+        for idx, url in enumerate(pdp_urls, 1):
+            # Progreso cada 20 PDPs
+            if idx % 20 == 0 or idx == 1:
+                elapsed = (time.time() - start) / 60
+                pct = idx / total * 100
+                print(f"   [{idx}/{total} — {pct:.0f}% — {elapsed:.1f}min] ✅ {success_count} exitosas")
+
             try:
                 page = context.new_page()
-                
                 is_active, data, error = check_pdp_active_and_extract(page, url)
-                
+                page.close()
+
                 result = {
                     "url": url,
                     "success": is_active,
                     "data": data if is_active else None,
                     "error": error if not is_active else None,
-                    "worker_id": worker_id,
-                    "url_index": url_idx
+                    "worker_id": 0,
+                    "url_index": idx,
                 }
-                
-                worker_results.append(result)
-                
-                page.close()
-                
-                # Pequeña pausa entre requests
-                time.sleep(0.5)
-                
+                all_results.append(result)
+                if is_active:
+                    success_count += 1
+
+                time.sleep(0.3)
+
             except Exception as e:
-                worker_results.append({
+                all_results.append({
                     "url": url,
                     "success": False,
                     "data": None,
-                    "error": f"Worker exception: {str(e)}",
-                    "worker_id": worker_id,
-                    "url_index": url_idx
+                    "error": f"Exception: {str(e)[:120]}",
+                    "worker_id": 0,
+                    "url_index": idx,
                 })
-        
-        browser.close()
-    
-    print(f"   ✅ Worker {worker_id} completado")
-    return worker_results
 
-def process_pdps_parallel(pdp_urls: List[str], max_workers: int = MAX_PARALLEL_WORKERS) -> List[Dict]:
-    """
-    Procesa múltiples PDPs en paralelo.
-    """
-    print(f"\n🚀 Procesando {len(pdp_urls)} PDPs en paralelo ({max_workers} workers)...")
-    
-    # Dividir URLs en batches
-    batch_size = max(1, len(pdp_urls) // max_workers)
-    batches = [pdp_urls[i:i + batch_size] for i in range(0, len(pdp_urls), batch_size)]
-    
-    # Limitar batches a max_workers
-    batches = batches[:max_workers]
-    
-    all_results = []
-    
-    with ThreadPoolExecutor(max_workers=len(batches)) as executor:
-        # Enviar cada batch a un worker
-        future_to_batch = {
-            executor.submit(worker_process_pdps, batch, i): (batch, i)
-            for i, batch in enumerate(batches)
-        }
-        
-        # Recolectar resultados
-        for future in as_completed(future_to_batch):
-            batch, worker_id = future_to_batch[future]
-            
-            try:
-                results = future.result(timeout=300)
-                all_results.extend(results)
-                
-                success_count = sum(1 for r in results if r["success"])
-                print(f"   📊 Worker {worker_id}: {success_count}/{len(results)} exitosas")
-                
-            except Exception as e:
-                print(f"   ❌ Worker {worker_id} error: {e}")
-                
-                # Marcar todas las URLs de este batch como fallidas
-                for url in batch:
-                    all_results.append({
-                        "url": url,
-                        "success": False,
-                        "data": None,
-                        "error": f"Worker timeout/error: {str(e)}",
-                        "worker_id": worker_id,
-                        "url_index": -1
-                    })
+        browser.close()
+
+    elapsed_total = (time.time() - start) / 60
+    print(f"\n📈 Resultados: {success_count}/{total} PDPs exitosas ({elapsed_total:.1f}min)")
+    return all_results
     
     # Estadísticas
     success_count = sum(1 for r in all_results if r["success"])
@@ -1335,7 +1299,7 @@ def main():
     
     # 6. Procesar PDPs en paralelo
     print(f"\n5️⃣ Procesando PDPs en paralelo...")
-    results = process_pdps_parallel(pdp_urls, max_workers=MAX_PARALLEL_WORKERS)
+    results = process_pdps_sequential(pdp_urls)
     
     # 7. Actualizar cache y generar output
     print(f"\n6️⃣ Actualizando cache y generando output...")

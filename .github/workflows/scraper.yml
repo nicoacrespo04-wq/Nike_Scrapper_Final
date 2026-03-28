@@ -148,6 +148,8 @@ jobs:
   solodeportes:
     name: Solo Deportes
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # necesario para pushear el cache al repo
     steps:
       - uses: actions/checkout@v4
 
