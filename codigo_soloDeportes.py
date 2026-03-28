@@ -40,7 +40,7 @@ LINKS_SHEET = os.getenv("LINKS_SHEET", "SoloDeportes")
 STATUSBOOKS_FILE = os.getenv("STATUSBOOKS_FILE", "StatusBooks NDDC ARG SP26.xlsb")
 
 # Límites
-MAX_PRODUCTS_PER_PLP = 0  # 0 = sin límite
+MAX_PRODUCTS_PER_PLP = 450
 OMIT_FIRST_N = 4  # Omitir primeros 4 productos (más vendidos)
 MAX_PARALLEL_WORKERS = 4  # Workers paralelos para PDPs
 MAX_DAYS_ACTIVE = 30  # Procesar productos actualizados en últimos X días
@@ -718,8 +718,7 @@ def extract_products_from_plp(page, cache: Dict, client: Optional[OpenAI] = None
     browser_connected = True
     
     # Procesar cada producto (omitir primeros N)
-    max_index = total_count if MAX_PRODUCTS_PER_PLP <= 0 else min(total_count, MAX_PRODUCTS_PER_PLP + OMIT_FIRST_N)
-    for i in range(OMIT_FIRST_N, max_index):
+    for i in range(OMIT_FIRST_N, min(total_count, MAX_PRODUCTS_PER_PLP + OMIT_FIRST_N)):
         if not browser_connected:
             print("      ⚠️  Browser desconectado, deteniendo extracción")
             break
@@ -749,84 +748,38 @@ def extract_products_from_plp(page, cache: Dict, client: Optional[OpenAI] = None
                 # Ya procesado, skip
                 continue
             
-            # NUEVO PRODUCTO: Necesitamos StyleColor via OpenAI
+            # NUEVO PRODUCTO: extraer StyleColor sin navegar a PDP
+            # El screenshot era código muerto (OpenAI ya usa el SKU como texto)
+            # Eliminarlo ahorra ~4s por producto → el run pasa de 6h a ~45min
             print(f"      🆕 Nuevo producto: SKU {sku}")
             
-            # Navegar a PDP para screenshot
-            try:
-                page.goto(pdp_url, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(2000)
-                
-                # Tomar screenshot MÁS PEQUEÑO (área específica)
-                # Buscar área principal del producto
-                try:
-                    product_area = page.locator(".product-media, .product-image, .product-info-main, .product.media")
-                    if product_area.count() > 0:
-                        png = product_area.first.screenshot()
-                    else:
-                        # Fallback: screenshot de ventana (recortado)
-                        png = page.screenshot(full_page=False, clip={"x": 0, "y": 0, "width": 1200, "height": 800})
-                except Exception as screenshot_error:
-                    print(f"         ⚠️  Error screenshot: {screenshot_error}")
-                    png = page.screenshot(full_page=False)
-                
-                # Consultar OpenAI (con manejo seguro) - ¡MODIFICADO!
-                stylecolor = None
-                error_msg = None
-                
-                if client:
-                    # Usamos el SKU de SoloDeportes (ya extraído de la PLP) como texto
-                    stylecolor, error_msg = ask_stylecolor_from_sku_safe(client, sku)
-                    # Pequeña pausa para evitar rate limiting
-                    time.sleep(1.5)
-                
-                # Volver a PLP (SOLO si el browser sigue conectado)
-                try:
-                    if page.context and page.context.browser and page.context.browser.is_connected():
-                        page.go_back()
-                        page.wait_for_timeout(1500)
-                    else:
-                        browser_connected = False
-                        print("      ⚠️  Browser desconectado durante procesamiento")
-                except Exception as e:
-                    print(f"      ⚠️  Error volviendo a PLP: {e}")
-                    browser_connected = False
-                
-                # Guardar en cache
-                update_cache_product(
-                    cache=cache,
-                    sku=sku,
-                    pdp_url=pdp_url,
-                    stylecolor=stylecolor,
-                    is_active=stylecolor is not None,  # Activo solo si tiene StyleColor
-                    error_reason=error_msg
-                )
-                
-                new_products += 1
-                
-                if stylecolor:
-                    print(f"         ✅ StyleColor: {stylecolor}")
-                else:
-                    print(f"         ⚠️  Sin StyleColor: {error_msg or 'OpenAI no devolvió resultado'}")
-                
-            except Exception as e:
-                error_str = str(e)
-                print(f"         ❌ Error procesando PDP: {error_str[:100]}")
-                
-                # Verificar si es error de navegación
-                if "closed" in error_str.lower() or "disconnected" in error_str.lower():
-                    browser_connected = False
-                    print("      ⚠️  Browser cerrado/desconectado")
-                
-                # Guardar igual pero marcado como error
-                update_cache_product(
-                    cache=cache,
-                    sku=sku,
-                    pdp_url=pdp_url,
-                    stylecolor=None,
-                    is_active=False,
-                    error_reason=error_str[:200]
-                )
+            stylecolor = None
+            error_msg = None
+            
+            if client:
+                stylecolor, error_msg = ask_stylecolor_from_sku_safe(client, sku)
+                time.sleep(0.3)  # pausa mínima anti-rate-limit
+            else:
+                # Solo regex (sin OpenAI)
+                stylecolor = _extract_stylecolor_from_sku_regex(sku)
+                if not stylecolor:
+                    error_msg = "Regex no matcheó y OpenAI no disponible"
+            
+            update_cache_product(
+                cache=cache,
+                sku=sku,
+                pdp_url=pdp_url,
+                stylecolor=stylecolor,
+                is_active=True,  # siempre activo desde PLP, se verificará en PDP phase
+                error_reason=error_msg
+            )
+            
+            new_products += 1
+            
+            if stylecolor:
+                print(f"         ✅ StyleColor: {stylecolor}")
+            else:
+                print(f"         ⚠️  Sin StyleColor: {error_msg or 'no determinado'}")
             
         except Exception as e:
             print(f"      ⚠️  Error procesando producto {i}: {e}")
@@ -873,7 +826,9 @@ def build_cache_from_plps(cache: Dict) -> int:
             print("   ⚠️  Continuando sin OpenAI")
     
     total_new = 0
-    
+    MAX_CACHE_BUILD_SECONDS = int(os.getenv("MAX_CACHE_BUILD_SECONDS", str(4 * 3600)))  # 4h default
+    cache_build_start = time.time()
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
         context = browser.new_context(
@@ -883,11 +838,17 @@ def build_cache_from_plps(cache: Dict) -> int:
         page = context.new_page()
         
         for plp_idx, plp_url in enumerate(plp_urls, 1):
-            print(f"\n📦 PLP {plp_idx}/{len(plp_urls)}: {plp_url}")
+            # Cortar si se acerca al límite de tiempo
+            elapsed = time.time() - cache_build_start
+            if elapsed > MAX_CACHE_BUILD_SECONDS:
+                print(f"\n⏱️  Límite de tiempo alcanzado ({elapsed/3600:.1f}h) — guardando cache y saliendo")
+                break
+
+            print(f"\n📦 PLP {plp_idx}/{len(plp_urls)}: {plp_url}  [{elapsed/60:.0f}min transcurridos]")
             
             try:
                 page.goto(plp_url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(3000)
+                page.wait_for_timeout(2000)
                 
                 # Extraer productos
                 new_in_plp = extract_products_from_plp(page, cache, client)
@@ -901,7 +862,7 @@ def build_cache_from_plps(cache: Dict) -> int:
                     print(f"   💾 Cache guardado ({len(cache['by_sku'])} productos)")
                 
                 # Pausa entre PLPs
-                time.sleep(2)
+                time.sleep(1)
                 
             except Exception as e:
                 print(f"   ❌ Error en PLP: {e}")
